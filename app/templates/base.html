@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}Ward Monitor{% endblock %}</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<header class="topbar">
+  <a class="brand" href="/">🏥 Ward Monitor</a>
+  <nav>
+    <a href="/">Board</a>
+    <a href="/upload">Upload case sheets</a>
+    <a href="/review">Review queue</a>
+    <a href="/docs">API</a>
+  </nav>
+</header>
+
+{% if not extraction_enabled %}
+<p class="banner warn">
+  Automatic extraction is off — <code>ANTHROPIC_API_KEY</code> is not set. Scans are still stored,
+  and records can be created manually.
+</p>
+{% endif %}
+
+<main>
+  {% block content %}{% endblock %}
+</main>
+
+<footer>
+  <strong>Clinical decision support only.</strong> NEWS2 scores and auto-extracted records assist
+  ward staff; they do not replace clinical judgement. Verify every record against the original sheet.
+</footer>
+</body>
+</html>

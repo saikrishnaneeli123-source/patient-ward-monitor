@@ -1,0 +1,34 @@
+{% extends "base.html" %}
+{% block title %}Review queue{% endblock %}
+{% block content %}
+<h1>Review queue</h1>
+<p class="lede">
+  Records created from a scan stay unverified until someone checks them against the original sheet.
+  Anything with a low confidence score or an illegible field is worth opening first.
+</p>
+
+{% if cases %}
+<table class="board">
+  <thead><tr><th>Patient</th><th>Case</th><th>Ward / bed</th><th>Confidence</th><th>Flags</th><th></th></tr></thead>
+  <tbody>
+  {% for case in cases %}
+    <tr {% if case.extraction_confidence is not none and case.extraction_confidence < 0.5 %}class="risk-medium"{% endif %}>
+      <td><a href="/cases/{{ case.id }}"><strong>{{ case.patient.full_name }}</strong></a>
+          <small>{{ case.patient.mrn or 'no MRN' }}</small></td>
+      <td>{{ case.case_number }}<small>{{ case.provisional_diagnosis or '—' }}</small></td>
+      <td>{{ case.ward_name or '—' }} {{ case.bed_label or '' }}</td>
+      <td>{% if case.extraction_confidence is not none %}{{ '%.0f%%' % (case.extraction_confidence * 100) }}
+          {% else %}<span class="muted">manual</span>{% endif %}</td>
+      <td class="warnings">
+        {% for warning in case.extraction_warnings %}<div>⚠ {{ warning }}</div>{% endfor %}
+        {% if not case.extraction_warnings %}<span class="muted">none</span>{% endif %}
+      </td>
+      <td><a class="button" href="/cases/{{ case.id }}">Open</a></td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">Nothing waiting — every case record has been verified.</p>
+{% endif %}
+{% endblock %}

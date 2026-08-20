@@ -1,0 +1,12 @@
+fastapi==0.118.0
+uvicorn[standard]==0.37.0
+sqlalchemy==2.0.43
+pydantic==2.11.9
+pydantic-settings==2.11.0
+jinja2==3.1.6
+python-multipart==0.0.20
+anthropic>=0.75.0
+pypdf==6.1.1
+pillow==11.3.0
+pytest==8.4.2
+httpx==0.28.1

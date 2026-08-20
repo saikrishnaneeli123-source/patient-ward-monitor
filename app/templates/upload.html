@@ -1,0 +1,93 @@
+{% extends "base.html" %}
+{% block title %}Upload case sheets{% endblock %}
+{% block content %}
+<h1>Upload case sheets</h1>
+<p class="lede">
+  Scan the ward folder in one pass. Each patient found in the file gets its own case record —
+  a multi-page PDF holding twenty patients produces twenty records, and a sheet for someone
+  already on the board updates their existing record instead of duplicating them.
+</p>
+
+<form class="card" method="post" action="/upload" enctype="multipart/form-data">
+  <label>Scanned files (PDF, PNG, JPEG — multiple allowed)
+    <input type="file" name="files" accept=".pdf,image/*" multiple required>
+  </label>
+  <label>Your name (recorded against the upload)
+    <input type="text" name="uploaded_by" placeholder="e.g. Sr. Mary Thomas">
+  </label>
+  <button type="submit">Upload and extract</button>
+</form>
+
+{% if results %}
+<section>
+  <h2>Extraction results</h2>
+  {% for result in results %}
+  <div class="card result">
+    <h3>{{ result.upload.original_filename }}
+      <span class="tag {{ result.upload.status.value }}">{{ result.upload.status.value }}</span>
+    </h3>
+    {% if result.error %}
+      <p class="banner warn">{{ result.error }}</p>
+    {% else %}
+      <p>{{ result.outcomes|length }} sheet(s) detected —
+         {{ result.created }} created, {{ result.updated }} updated, {{ result.skipped }} skipped.</p>
+      {% if result.document_notes %}<p class="muted">Scan notes: {{ result.document_notes }}</p>{% endif %}
+      <table class="mini">
+        <thead><tr><th>Patient</th><th>Pages</th><th>Action</th><th>Confidence</th><th>Needs attention</th></tr></thead>
+        <tbody>
+        {% for outcome in result.outcomes %}
+          <tr>
+            <td>
+              {% if outcome.case_record %}
+                <a href="/cases/{{ outcome.case_record.id }}">{{ outcome.case_record.patient.full_name }}</a>
+                <small>{{ outcome.case_record.case_number }}</small>
+              {% else %}{{ outcome.sheet.full_name or 'unidentified' }}{% endif %}
+            </td>
+            <td>{{ outcome.sheet.page_range or '—' }}</td>
+            <td><span class="tag {{ outcome.action }}">{{ outcome.action }}</span></td>
+            <td>{{ '%.0f%%' % (outcome.sheet.confidence * 100) }}</td>
+            <td class="warnings">
+              {% if outcome.reason %}<div>{{ outcome.reason }}</div>{% endif %}
+              {% for warning in outcome.warnings %}<div>⚠ {{ warning }}</div>{% endfor %}
+              {% if not outcome.reason and not outcome.warnings %}<span class="muted">—</span>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </div>
+  {% endfor %}
+  <p><a class="button" href="/review">Go to the review queue →</a></p>
+</section>
+{% endif %}
+
+<section>
+  <h2>Recent uploads</h2>
+  {% if uploads %}
+  <table class="mini">
+    <thead><tr><th>File</th><th>Pages</th><th>Status</th><th>Sheets</th><th>Created</th><th>By</th><th>When</th><th></th></tr></thead>
+    <tbody>
+    {% for upload in uploads %}
+      <tr>
+        <td>{{ upload.original_filename }}</td>
+        <td>{{ upload.page_count or '?' }}</td>
+        <td><span class="tag {{ upload.status.value }}">{{ upload.status.value }}</span>
+            {% if upload.error %}<small title="{{ upload.error }}">{{ upload.error[:60] }}…</small>{% endif %}</td>
+        <td>{{ upload.sheets_detected }}</td>
+        <td>{{ upload.records_created }}</td>
+        <td>{{ upload.uploaded_by or '—' }}</td>
+        <td>{{ upload.uploaded_at.strftime('%d %b %H:%M') }}</td>
+        <td>
+          <form method="post" action="/api/uploads/{{ upload.id }}/reprocess" onsubmit="event.preventDefault();
+                fetch(this.action, {method:'POST'}).then(() => location.reload());">
+            <button class="link" type="submit">re-extract</button>
+          </form>
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">Nothing uploaded yet.</p>{% endif %}
+</section>
+{% endblock %}

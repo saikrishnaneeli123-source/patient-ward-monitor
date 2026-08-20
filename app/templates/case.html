@@ -1,0 +1,167 @@
+{% extends "base.html" %}
+{% block title %}{{ case.patient.full_name }} — {{ case.case_number }}{% endblock %}
+{% block content %}
+{% set latest = case.latest_observation %}
+
+<div class="page-head">
+  <div>
+    <h1>{{ case.patient.full_name }}</h1>
+    <p class="muted">
+      {{ case.case_number }} · MRN {{ case.patient.mrn or 'not recorded' }} ·
+      {{ case.patient.age_years or '?' }} yrs · {{ case.patient.sex.value }} ·
+      {{ case.ward_name or 'no ward' }} bed {{ case.bed_label or '—' }}
+    </p>
+  </div>
+  <div>
+    {% if case.verification.value == 'unverified' %}
+      <span class="tag unverified">unverified</span>
+    {% else %}
+      <span class="tag verified">verified by {{ case.verified_by }}</span>
+    {% endif %}
+  </div>
+</div>
+
+{% set flagged_allergies = case.allergies|real_allergies %}
+{% if flagged_allergies %}
+<p class="banner allergy-banner">⚠ Allergies: <strong>{{ flagged_allergies|join(', ') }}</strong></p>
+{% elif case.allergies %}
+<p class="muted">Allergies: {{ case.allergies|join(', ') }} (as written on the sheet)</p>
+{% else %}
+<p class="muted">No allergy status recorded on the case sheet — confirm with the patient.</p>
+{% endif %}
+
+{% if case.verification.value == 'unverified' %}
+<div class="card verify">
+  <h2>Verify against the original scan</h2>
+  {% if case.extraction_warnings %}
+    <ul class="warnings">{% for warning in case.extraction_warnings %}<li>⚠ {{ warning }}</li>{% endfor %}</ul>
+  {% endif %}
+  <p class="muted">
+    Extracted from
+    {% if case.source_upload %}<em>{{ case.source_upload.original_filename }}</em>,
+      page(s) {{ case.source_pages or '?' }}{% else %}manual entry{% endif %}
+    {% if case.extraction_confidence is not none %} · confidence {{ '%.0f%%' % (case.extraction_confidence * 100) }}{% endif %}
+  </p>
+  <form method="post" action="/cases/{{ case.id }}/verify">
+    <input type="text" name="verified_by" placeholder="your name" required>
+    <button type="submit">Confirm this record is correct</button>
+  </form>
+</div>
+{% endif %}
+
+<div class="columns">
+  <section class="card">
+    <h2>Case details</h2>
+    <dl>
+      <dt>Admitted</dt><dd>{{ case.admission_date or '—' }}</dd>
+      <dt>Consultant</dt><dd>{{ case.consultant or '—' }}</dd>
+      <dt>Department</dt><dd>{{ case.department or '—' }}</dd>
+      <dt>Chief complaint</dt><dd>{{ case.chief_complaint or '—' }}</dd>
+      <dt>Working diagnosis</dt><dd>{{ case.provisional_diagnosis or '—' }}</dd>
+      <dt>Comorbidities</dt><dd>{{ case.comorbidities|join(', ') if case.comorbidities else '—' }}</dd>
+      <dt>History</dt><dd>{{ case.history or '—' }}</dd>
+      <dt>Next of kin</dt><dd>{{ case.patient.next_of_kin or '—' }} {{ case.patient.next_of_kin_phone or '' }}</dd>
+    </dl>
+    {% if case.medications %}
+    <h3>Medications</h3>
+    <table class="mini">
+      <thead><tr><th>Drug</th><th>Dose</th><th>Route</th><th>Frequency</th></tr></thead>
+      <tbody>
+      {% for med in case.medications %}
+        <tr><td>{{ med.name or '—' }}</td><td>{{ med.dose or '—' }}</td>
+            <td>{{ med.route or '—' }}</td><td>{{ med.frequency or '—' }}</td></tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if case.notes %}<h3>Notes</h3><p>{{ case.notes }}</p>{% endif %}
+  </section>
+
+  <section class="card">
+    <h2>Record observations</h2>
+    <form method="post" action="/cases/{{ case.id }}/observations" class="obs-form">
+      <label>Resp rate <input type="number" name="respiratory_rate" min="0" max="90"></label>
+      <label>SpO₂ % <input type="number" name="spo2" min="0" max="100"></label>
+      <label class="check"><input type="checkbox" name="on_oxygen"> On oxygen</label>
+      <label>SpO₂ scale
+        <select name="spo2_scale">
+          <option value="1">1 — standard</option>
+          <option value="2">2 — hypercapnic resp failure</option>
+        </select>
+      </label>
+      <label>Systolic BP <input type="number" name="systolic_bp" min="0" max="300"></label>
+      <label>Diastolic BP <input type="number" name="diastolic_bp" min="0" max="250"></label>
+      <label>Pulse <input type="number" name="pulse" min="0" max="300"></label>
+      <label>Temp °C <input type="number" step="0.1" name="temperature_c" min="20" max="45"></label>
+      <label>Consciousness
+        <select name="consciousness">
+          <option value="alert">Alert</option>
+          <option value="confusion">New confusion</option>
+          <option value="voice">Voice</option>
+          <option value="pain">Pain</option>
+          <option value="unresponsive">Unresponsive</option>
+        </select>
+      </label>
+      <label>Recorded by <input type="text" name="recorded_by" placeholder="your name"></label>
+      <label class="wide">Note <input type="text" name="note"></label>
+      <button type="submit">Save observations</button>
+    </form>
+
+    {% if latest %}
+    <div class="latest risk-{{ latest.risk_level }}">
+      <h3>Latest NEWS2: <span class="pill risk-{{ latest.risk_level }}">{{ latest.news2_score }}</span>
+        <small>{{ latest.risk_level }} risk</small></h3>
+      <p>{{ latest.news2_breakdown.response }}</p>
+      {% if latest.news2_breakdown.partial %}
+        <p class="muted">Partial score — not recorded: {{ latest.news2_breakdown.missing|join(', ') }}.</p>
+      {% endif %}
+    </div>
+    {% endif %}
+  </section>
+</div>
+
+{% if case.alerts %}
+<section class="card">
+  <h2>Alerts</h2>
+  {% for alert in case.alerts %}
+  <div class="alert sev-{{ alert.severity }} {% if alert.acknowledged_at %}acked{% endif %}">
+    <div>{{ alert.message }} <small>{{ alert.created_at.strftime('%d %b %H:%M') }}</small>
+      {% if alert.acknowledged_at %}<small>· acknowledged by {{ alert.acknowledged_by }}</small>{% endif %}
+    </div>
+    {% if not alert.acknowledged_at %}
+    <form method="post" action="/alerts/{{ alert.id }}/acknowledge">
+      <input type="hidden" name="next_url" value="/cases/{{ case.id }}">
+      <input type="text" name="acknowledged_by" placeholder="your name" required>
+      <button type="submit">Acknowledge</button>
+    </form>
+    {% endif %}
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+<section class="card">
+  <h2>Observation history</h2>
+  {% if case.observations %}
+  <table class="mini">
+    <thead><tr><th>When</th><th>RR</th><th>SpO₂</th><th>O₂</th><th>BP</th><th>Pulse</th><th>Temp</th><th>ACVPU</th><th>NEWS2</th><th>By</th></tr></thead>
+    <tbody>
+    {% for obs in case.observations %}
+      <tr>
+        <td>{{ obs.recorded_at.strftime('%d %b %H:%M') }}</td>
+        <td>{{ obs.respiratory_rate or '—' }}</td>
+        <td>{{ obs.spo2 or '—' }}</td>
+        <td>{{ 'yes' if obs.on_oxygen else 'air' }}</td>
+        <td>{{ obs.systolic_bp or '—' }}{% if obs.diastolic_bp %}/{{ obs.diastolic_bp }}{% endif %}</td>
+        <td>{{ obs.pulse or '—' }}</td>
+        <td>{{ obs.temperature_c or '—' }}</td>
+        <td>{{ obs.consciousness.value }}</td>
+        <td><span class="pill risk-{{ obs.risk_level }}">{{ obs.news2_score }}</span></td>
+        <td>{{ obs.recorded_by or '—' }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">No observations recorded yet.</p>{% endif %}
+</section>
+{% endblock %}

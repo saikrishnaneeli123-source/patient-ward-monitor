@@ -1,0 +1,83 @@
+{% extends "base.html" %}
+{% block title %}Ward board{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Ward board</h1>
+  <div class="filters">
+    <a class="chip {% if not active_ward %}on{% endif %}" href="/">All wards</a>
+    {% for w in wards %}
+      <a class="chip {% if active_ward == w %}on{% endif %}" href="/?ward={{ w }}">{{ w }}</a>
+    {% endfor %}
+  </div>
+</div>
+
+<div class="stats">
+  <div class="stat"><span class="num">{{ rows|length }}</span> active cases</div>
+  <div class="stat"><span class="num">{{ rows|selectattr('risk_level','equalto','high')|list|length }}</span> high risk</div>
+  <div class="stat"><span class="num">{{ alerts|length }}</span> open alerts</div>
+  <div class="stat"><span class="num">{{ unverified }}</span> awaiting verification</div>
+</div>
+
+{% if alerts %}
+<section class="alerts">
+  <h2>Open alerts</h2>
+  {% for alert in alerts %}
+  <div class="alert sev-{{ alert.severity }}">
+    <div>
+      <a href="/cases/{{ alert.case_record_id }}">{{ alert.case_record.patient.full_name }}</a>
+      — {{ alert.message }}
+      <small>{{ alert.created_at.strftime('%d %b %H:%M') }}</small>
+    </div>
+    <form method="post" action="/alerts/{{ alert.id }}/acknowledge">
+      <input type="hidden" name="next_url" value="/">
+      <input type="text" name="acknowledged_by" placeholder="your name" required>
+      <button type="submit">Acknowledge</button>
+    </form>
+  </div>
+  {% endfor %}
+</section>
+{% endif %}
+
+{% if rows %}
+<table class="board">
+  <thead>
+    <tr>
+      <th>Bed</th><th>Patient</th><th>MRN</th><th>Working diagnosis</th>
+      <th>NEWS2</th><th>Last obs</th><th>Allergies</th><th>Status</th>
+    </tr>
+  </thead>
+  <tbody>
+  {% for row in rows %}
+    <tr class="risk-{{ row.risk_level or 'none' }}">
+      <td class="bed">{{ row.bed_label or '—' }}<small>{{ row.ward_name or '' }}</small></td>
+      <td>
+        <a href="/cases/{{ row.case_record_id }}"><strong>{{ row.patient_name }}</strong></a>
+        <small>{{ row.age_years or '?' }}{{ row.sex.value[0]|upper if row.sex.value != 'unknown' else '' }} · {{ row.case_number }}</small>
+      </td>
+      <td>{{ row.mrn or '—' }}</td>
+      <td>{{ row.provisional_diagnosis or '—' }}</td>
+      <td class="score">
+        {% if row.news2_score is not none %}
+          <span class="pill risk-{{ row.risk_level }}">{{ row.news2_score }}</span>
+        {% else %}<span class="muted">no obs</span>{% endif %}
+      </td>
+      <td>{{ row.last_observed_at.strftime('%d %b %H:%M') if row.last_observed_at else '—' }}</td>
+      <td>
+        {% set flagged = row.allergies|real_allergies %}
+        {% if flagged %}<span class="allergy">{{ flagged|join(', ') }}</span>
+        {% elif row.allergies %}<span class="muted">{{ row.allergies|join(', ') }}</span>
+        {% else %}<span class="muted">not recorded</span>{% endif %}
+      </td>
+      <td>
+        {% if row.verification.value == 'unverified' %}<span class="tag unverified">unverified</span>
+        {% else %}<span class="tag verified">verified</span>{% endif %}
+        {% if row.open_alerts %}<span class="tag alerting">{{ row.open_alerts }} alert{{ 's' if row.open_alerts > 1 }}</span>{% endif %}
+      </td>
+    </tr>
+  {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<p class="empty">No active cases. <a href="/upload">Upload a case sheet</a> to get started.</p>
+{% endif %}
+{% endblock %}
