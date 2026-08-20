@@ -1,0 +1,13 @@
+{% extends "base.html" %}
+{% block title %}Not permitted{% endblock %}
+{% block content %}
+<div class="card verify">
+  <h1>Not permitted</h1>
+  <p>
+    You are signed in as <strong>{{ user.full_name }}</strong> ({{ user.role.value }}),
+    and that role may not <strong>{{ reason }}</strong>.
+  </p>
+  <p class="muted">Ask an administrator if you need this access.</p>
+  <p><a class="button" href="/">Back to the board</a></p>
+</div>
+{% endblock %}

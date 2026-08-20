@@ -12,10 +12,7 @@
   <label>Scanned files (PDF, PNG, JPEG — multiple allowed)
     <input type="file" name="files" accept=".pdf,image/*" multiple required>
   </label>
-  <label>Your name (recorded against the upload)
-    <input type="text" name="uploaded_by" placeholder="e.g. Sr. Mary Thomas">
-  </label>
-  <button type="submit">Upload and extract</button>
+  <button type="submit">Upload and extract — as {{ user.full_name }}</button>
 </form>
 
 {% if results %}

@@ -42,10 +42,13 @@
       page(s) {{ case.source_pages or '?' }}{% else %}manual entry{% endif %}
     {% if case.extraction_confidence is not none %} · confidence {{ '%.0f%%' % (case.extraction_confidence * 100) }}{% endif %}
   </p>
+  {% if can(user, PERMS.VERIFY_CASE) %}
   <form method="post" action="/cases/{{ case.id }}/verify">
-    <input type="text" name="verified_by" placeholder="your name" required>
-    <button type="submit">Confirm this record is correct</button>
+    <button type="submit">Confirm this record is correct — as {{ user.full_name }}</button>
   </form>
+  {% else %}
+  <p class="muted">Your role ({{ user.role.value }}) cannot verify records. Ask a nurse or doctor.</p>
+  {% endif %}
 </div>
 {% endif %}
 
@@ -79,6 +82,7 @@
 
   <section class="card">
     <h2>Record observations</h2>
+    {% if can(user, PERMS.RECORD_OBSERVATIONS) %}
     <form method="post" action="/cases/{{ case.id }}/observations" class="obs-form">
       <label>Resp rate <input type="number" name="respiratory_rate" min="0" max="90"></label>
       <label>SpO₂ % <input type="number" name="spo2" min="0" max="100"></label>
@@ -102,10 +106,12 @@
           <option value="unresponsive">Unresponsive</option>
         </select>
       </label>
-      <label>Recorded by <input type="text" name="recorded_by" placeholder="your name"></label>
       <label class="wide">Note <input type="text" name="note"></label>
-      <button type="submit">Save observations</button>
+      <button type="submit">Save observations — as {{ user.full_name }}</button>
     </form>
+    {% else %}
+    <p class="muted">Your role ({{ user.role.value }}) cannot record observations.</p>
+    {% endif %}
 
     {% if latest %}
     <div class="latest risk-{{ latest.risk_level }}">
@@ -128,10 +134,9 @@
     <div>{{ alert.message }} <small>{{ alert.created_at.strftime('%d %b %H:%M') }}</small>
       {% if alert.acknowledged_at %}<small>· acknowledged by {{ alert.acknowledged_by }}</small>{% endif %}
     </div>
-    {% if not alert.acknowledged_at %}
+    {% if not alert.acknowledged_at and can(user, PERMS.ACKNOWLEDGE_ALERT) %}
     <form method="post" action="/alerts/{{ alert.id }}/acknowledge">
       <input type="hidden" name="next_url" value="/cases/{{ case.id }}">
-      <input type="text" name="acknowledged_by" placeholder="your name" required>
       <button type="submit">Acknowledge</button>
     </form>
     {% endif %}
@@ -139,6 +144,34 @@
   {% endfor %}
 </section>
 {% endif %}
+
+<section class="card trend">
+  <h2>Vitals trend</h2>
+  {% if trend.has_chart %}
+    <figure class="chart">
+      <figcaption>
+        NEWS2 over time — {{ trend.point_count }} observation{{ 's' if trend.point_count > 1 }}.
+        Bands show the risk thresholds; escalating points are marked and labelled.
+      </figcaption>
+      {{ trend.news2 }}
+    </figure>
+    {% if trend.note %}<p class="muted">{{ trend.note }}</p>{% endif %}
+    {% if trend.sparklines %}
+    <div class="sparks">
+      {% for spark in trend.sparklines %}
+      <figure class="spark">
+        <figcaption>{{ spark.label }}</figcaption>
+        <div class="spark-value">{{ spark.latest }}<span class="unit">{{ spark.unit }}</span></div>
+        {{ spark.svg }}
+        <div class="spark-range">range {{ spark.lowest }}–{{ spark.highest }}</div>
+      </figure>
+      {% endfor %}
+    </div>
+    {% endif %}
+  {% else %}
+    <p class="empty">{{ trend.note }}</p>
+  {% endif %}
+</section>
 
 <section class="card">
   <h2>Observation history</h2>

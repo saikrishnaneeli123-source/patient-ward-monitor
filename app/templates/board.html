@@ -28,11 +28,12 @@
       — {{ alert.message }}
       <small>{{ alert.created_at.strftime('%d %b %H:%M') }}</small>
     </div>
+    {% if can(user, PERMS.ACKNOWLEDGE_ALERT) %}
     <form method="post" action="/alerts/{{ alert.id }}/acknowledge">
       <input type="hidden" name="next_url" value="/">
-      <input type="text" name="acknowledged_by" placeholder="your name" required>
       <button type="submit">Acknowledge</button>
     </form>
+    {% endif %}
   </div>
   {% endfor %}
 </section>

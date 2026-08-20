@@ -125,3 +125,40 @@ dt { color: var(--muted); font-size: 13px; }
 dd { margin: 0; }
 
 .empty { color: var(--muted); background: var(--panel); border: 1px dashed var(--line); border-radius: 12px; padding: 24px; text-align: center; }
+
+/* --- Authentication ------------------------------------------------------ */
+.whoami { margin-left: auto; display: flex; align-items: center; gap: 12px; color: #cfe3f5; font-size: 13px; }
+.whoami small { display: inline; color: #8fb3d4; margin-left: 4px; }
+.whoami button.link { color: #cfe3f5; font-size: 13px; }
+.login { max-width: 380px; margin: 48px auto; }
+.login .card { margin-top: 16px; }
+.login button { width: 100%; }
+.login-error { border-radius: 8px; border: 1px solid #f0d9a8; }
+.small-print { font-size: 13px; margin-top: 16px; }
+input[type=password] {
+  display: block; width: 100%; margin-top: 4px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; font-size: 15px; background: #fff;
+}
+.banner.ok { background: #e6f4ec; border: 1px solid #b7ddc7; color: #22543d; border-radius: 10px; padding: 12px 16px; }
+pre.token {
+  background: #0f2438; color: #cfe3f5; padding: 12px 14px; border-radius: 8px;
+  overflow-x: auto; font-size: 13px; user-select: all;
+}
+
+/* --- Vitals trend -------------------------------------------------------- */
+/* Charts are inline SVG rendered server-side: no chart library, no CDN, and
+   every plotted value also appears in the observation table below. */
+.trend figure { margin: 0; }
+.chart figcaption, .spark figcaption { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+.trend-svg { display: block; max-width: 100%; height: auto; }
+.trend-svg circle[r="12"] { cursor: crosshair; }
+
+.sparks {
+  display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 16px; margin-top: 20px; padding-top: 16px; border-top: 1px solid var(--line);
+}
+.spark figcaption { margin-bottom: 2px; }
+.spark-value { font-size: 22px; font-weight: 700; color: var(--ink); line-height: 1.2; }
+.spark-value .unit { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 4px; }
+.spark-svg { display: block; max-width: 100%; height: auto; margin-top: 2px; }
+.spark-range { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }

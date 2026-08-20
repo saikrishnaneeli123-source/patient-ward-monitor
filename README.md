@@ -10,6 +10,8 @@ updates their record instead of duplicating them.
 
 ![Ward board](docs/board.png)
 
+![Vitals trend](docs/trend.png)
+
 ---
 
 ## Quick start
@@ -21,11 +23,18 @@ pip install -r requirements.txt
 cp .env.example .env          # add your ANTHROPIC_API_KEY
 export ANTHROPIC_API_KEY=sk-ant-...
 
-python -m scripts.seed_demo   # optional: a demo ward with 6 patients
+# Bootstrap the first account (prompts for a password):
+python -m scripts.create_user --username admin --name "Ward Admin" --role admin
+
+python -m scripts.seed_demo   # optional: a demo ward, 6 patients and 4 staff accounts
 uvicorn app.main:app --reload
 ```
 
-Open <http://127.0.0.1:8000/> for the ward board, or `/docs` for the API.
+Open <http://127.0.0.1:8000/> and sign in. `/docs` has the API.
+
+The demo seed creates `admin`, `siyer` (doctor), `mthomas` (nurse) and `clerk`,
+all with the password `ward-demo-password` — for looking around locally, never
+for anything real.
 
 Without an API key the app still runs — scans are stored and records can be
 created by hand — but automatic extraction is disabled and says so.
@@ -83,6 +92,39 @@ dose gets into a chart. The pipeline is deliberately conservative:
 
 ---
 
+## Who can do what
+
+Every page and endpoint requires a signed-in user. Browsers use a signed session
+cookie; devices and integrations send `Authorization: Bearer <token>`, where only
+a SHA-256 of the token is stored.
+
+| | view | upload | record obs | verify | edit | discharge | ack alerts | manage users |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **admin** | ● | ● | ● | ● | ● | ● | ● | ● |
+| **doctor** | ● | ● | ● | ● | ● | ● | ● | |
+| **nurse** | ● | ● | ● | ● | | | ● | |
+| **clerk** | ● | ● | | | | | | |
+| **readonly** | ● | | | | | | | |
+
+Nurses may confirm a transcription against the sheet, because that is a
+transcription check rather than a clinical decision; changing a diagnosis or
+discharging a patient stays with doctors. Clerks scan paperwork and read the
+board without clinical authority.
+
+Two rules make the audit trail mean something:
+
+- **Actions are attributed to the session, never to a typed-in name.** The API
+  rejects a `recorded_by` field outright — an observation cannot be filed under
+  a colleague's name.
+- **The UI hides what your role cannot do**, so nobody is offered a button that
+  would only 403.
+
+Passwords are hashed with scrypt at the RFC 7914 interactive parameters
+(n=2¹⁴, ~160 ms per attempt). Five failed attempts lock an account for five
+minutes. Deactivating a user revokes their sessions and API token immediately.
+
+---
+
 ## Monitoring
 
 Each set of vitals is scored with **NEWS2** (Royal College of Physicians): RR,
@@ -100,6 +142,27 @@ the escalation text, and the alert feed.
 
 Vitals printed on the case sheet are transcribed as the first observation, so a
 patient has a score the moment their record is created.
+
+### The trend chart
+
+Each case page plots NEWS2 over time, with a small multiple per measure. It is
+inline SVG rendered on the server — no charting library and no CDN, so it works
+on a slow ward network and needs nothing added to a hospital CSP.
+
+Three deliberate choices:
+
+- **Risk lives in the labelled background bands, not in four marker colours.**
+  The four NEWS2 risk hues cannot all be told apart as small marks on a white
+  card — two of them measure ΔE 13.6 apart and sit under 3:1 contrast. So the
+  bands carry risk, each labelled in words, and only escalating points take an
+  accent colour *and* print their score. Colour never carries meaning alone.
+- **One y-axis per chart.** The vitals are separate small multiples rather than
+  extra lines on the NEWS2 axis; overlaying different units on one scale invents
+  correlations that are not in the data.
+- **x is real elapsed time**, so a six-hour gap between rounds looks like one.
+
+Every plotted value also appears in the observation table below the chart, so no
+reading is reachable only by hovering.
 
 ---
 
@@ -120,12 +183,16 @@ Interactive docs at `/docs`. Everything the UI does is available as JSON.
 | `POST`/`GET` | `/api/cases/{id}/observations` | Record and list vitals |
 | `GET` | `/api/patients?q=` | Search by name or MRN |
 | `GET` | `/api/alerts` · `POST /api/alerts/{id}/acknowledge` | Alert feed |
+| `GET` | `/api/me` | The caller's identity and permissions |
+| `GET`/`POST` | `/api/users` | List / create staff accounts (admin) |
+| `POST` | `/api/users/{id}/deactivate` | Revoke access immediately (admin) |
 
 Example:
 
 ```bash
 curl -X POST http://127.0.0.1:8000/api/uploads \
-  -F "files=@ward-round.pdf" -F "uploaded_by=Sr. Mary Thomas"
+  -H "Authorization: Bearer $WARD_TOKEN" \
+  -F "files=@ward-round.pdf"
 ```
 
 ```json
@@ -154,6 +221,9 @@ All settings take a `WARD_` prefix and can live in `.env` (see `.env.example`).
 | `WARD_UPLOAD_DIR` | `./uploads` | Where scans are stored |
 | `WARD_EXTRACTION_MODEL` | `claude-opus-5` | Model used to read sheets |
 | `WARD_MAX_UPLOAD_MB` | `25` | Per-file upload limit |
+| `WARD_SECRET_KEY` | random | Signs session cookies — **set this in production**, or every restart signs everyone out |
+| `WARD_SESSION_MAX_AGE` | `28800` | Session lifetime in seconds (one shift) |
+| `WARD_COOKIE_SECURE` | `false` | Set `true` behind HTTPS |
 
 Accepted uploads: PDF, PNG, JPEG, WebP, GIF, TIFF, BMP. Images are downscaled to
 1568px on the long edge and converted if needed; PDFs are sent whole so Claude
@@ -168,15 +238,17 @@ app/
   main.py          FastAPI app
   config.py        settings
   db.py            engine and session
-  models.py        Patient, CaseRecord, Upload, Observation, Alert, Ward, Bed
+  models.py        User, Patient, CaseRecord, Upload, Observation, Alert, Ward, Bed
+  auth.py          password hashing, sessions, bearer tokens, the role matrix
   extraction.py    Claude vision/PDF → structured sheets (pluggable backend)
   intake.py        identity matching, record creation, safety rules
   scoring.py       NEWS2
+  charts.py        server-rendered inline SVG for the vitals trend
   services.py      queries shared by API and UI
   routers/         api.py (JSON) · ui.py (HTML)
-  templates/       board, upload, review, case
-scripts/seed_demo.py
-tests/             85 tests
+  templates/       login, board, upload, review, case, users
+scripts/           seed_demo.py · create_user.py
+tests/             194 tests
 ```
 
 `extraction.set_extractor()` swaps the backend, which is how the tests run the
@@ -187,12 +259,13 @@ whole pipeline without touching the API.
 ## Tests
 
 ```bash
-pytest -q      # 85 tests
+pytest -q      # 194 tests
 ```
 
 Covers the NEWS2 chart parameter by parameter, identity matching and
-de-duplication, the no-overwrite rules, alert escalation, and the HTTP layer
-end to end.
+de-duplication, the no-overwrite rules, alert escalation, the full role matrix
+against real endpoints, login and lockout behaviour, chart geometry and its
+legibility rules, and the HTTP layer end to end.
 
 ---
 
@@ -201,15 +274,18 @@ end to end.
 This is a working application, not a deployed hospital system. It deliberately
 does **not** yet include:
 
-- **Authentication or authorisation.** Every endpoint is open. Put it behind an
-  identity provider and add role checks before it touches a network.
+- **Single-sign-on, MFA, or password rotation.** Accounts are local to the app,
+  with role-based access and scrypt-hashed passwords, but a hospital will want
+  this behind its own identity provider. The login throttle is also in-process,
+  so it does not hold across multiple workers.
 - **Encryption at rest and PHI handling.** Scans sit unencrypted in
   `WARD_UPLOAD_DIR` and data in SQLite. Real deployment needs encrypted storage,
   retention limits, and a decision about what leaves the building — case sheets
   are sent to the Claude API for extraction, which is a data-processing
   arrangement your organisation must approve.
-- **A tamper-evident audit trail.** Verification and acknowledgement are
-  recorded, but edits are not versioned.
+- **A tamper-evident audit trail.** Who verified, who recorded and who
+  acknowledged are all captured against a user account, but edits are not
+  versioned and the log is not append-only.
 - **Regulatory clearance.** NEWS2 scoring and automated transcription in a
   clinical workflow may bring this under medical-device software rules in your
   jurisdiction (UKCA/CE under MDR, FDA CDS guidance, CDSCO, etc.).

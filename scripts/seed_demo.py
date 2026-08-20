@@ -6,13 +6,76 @@ Simulates an upload whose extraction found six patients on one scanned PDF.
 """
 from __future__ import annotations
 
-from datetime import date, timedelta
+import random
+from datetime import date, datetime, timedelta, timezone
 
-from app import intake, models
+from app import auth, intake, models
 from app.db import SessionLocal, init_db
 from app.extraction import ExtractedCaseSheet, ExtractedMedication, ExtractedVitals
 
 TODAY = date.today()
+
+DEMO_PASSWORD = "ward-demo-password"
+DEMO_STAFF = [
+    ("admin", "Ward Administrator", models.Role.admin),
+    ("siyer", "Dr S. Iyer", models.Role.doctor),
+    ("mthomas", "Sr. Mary Thomas", models.Role.nurse),
+    ("clerk", "Ward Clerk", models.Role.clerk),
+]
+
+
+def seed_staff(db) -> models.User:
+    """Create the demo accounts and return the nurse who records observations."""
+    for username, full_name, role in DEMO_STAFF:
+        try:
+            auth.create_user(
+                db, username=username, full_name=full_name, password=DEMO_PASSWORD, role=role
+            )
+        except ValueError:
+            pass  # already seeded
+    return db.query(models.User).filter_by(username="mthomas").one()
+
+
+def seed_observation_history(db, case: models.CaseRecord, nurse: models.User) -> None:
+    """Back-fill four-hourly rounds so the trend chart has something to show.
+
+    The extracted sheet already provided the newest reading, so this walks
+    backwards from it with small plausible drifts.
+    """
+    latest = case.latest_observation
+    if latest is None:
+        return
+    rng = random.Random(case.id)  # deterministic per case, so reseeding looks the same
+    for step in range(6, 0, -1):
+        drift = step / 6
+        observation = models.Observation(
+            case_record_id=case.id,
+            recorded_at=latest.recorded_at - timedelta(hours=4 * step),
+            recorded_by=nurse.full_name,
+            recorded_by_id=nurse.id,
+            respiratory_rate=_drift(latest.respiratory_rate, drift, 4, rng),
+            spo2=_drift(latest.spo2, -drift, 3, rng, cap=100),
+            on_oxygen=latest.on_oxygen and step <= 2,
+            systolic_bp=_drift(latest.systolic_bp, -drift, 10, rng),
+            pulse=_drift(latest.pulse, drift, 8, rng),
+            temperature_c=round(latest.temperature_c - drift * 0.8 + rng.uniform(-0.2, 0.2), 1)
+            if latest.temperature_c else None,
+            consciousness=models.Consciousness.alert,
+            note="Routine four-hourly round.",
+        )
+        # Score before adding: iterating case.observations afterwards would walk
+        # an already-loaded collection and silently miss these.
+        intake.score_observation(observation)
+        db.add(observation)
+    db.flush()
+
+
+def _drift(value, direction, spread, rng, cap=None):
+    """Nudge a reading back towards normal, with a little noise."""
+    if value is None:
+        return None
+    drifted = round(value - direction * spread + rng.uniform(-2, 2))
+    return min(drifted, cap) if cap else max(drifted, 0)
 
 
 def sheets() -> list[ExtractedCaseSheet]:
@@ -104,21 +167,28 @@ def main() -> None:
         db.add(upload)
         db.flush()
 
+        nurse = seed_staff(db)
         outcomes = [intake.apply_sheet(db, s, upload) for s in sheets()]
+        for outcome in outcomes:
+            if outcome.case_record is not None:
+                seed_observation_history(db, outcome.case_record, nurse)
         upload.sheets_detected = len(outcomes)
         upload.records_created = sum(1 for o in outcomes if o.action == "created")
 
         # One record has already been checked by a clinician.
         first = outcomes[0].case_record
+        doctor = db.query(models.User).filter_by(username="siyer").one()
         if first is not None:
             first.verification = models.VerificationStatus.verified
-            first.verified_by = "Dr S. Iyer"
-            from datetime import datetime, timezone
-
+            first.verified_by = doctor.full_name
+            first.verified_by_id = doctor.id
             first.verified_at = datetime.now(timezone.utc)
 
         db.commit()
         print(f"Seeded {upload.records_created} case records across 2 wards.")
+        print(f"Staff accounts (password '{DEMO_PASSWORD}'):")
+        for username, full_name, role in DEMO_STAFF:
+            print(f"  {username:9} {role.value:9} {full_name}")
         print("Run:  uvicorn app.main:app --reload   then open http://127.0.0.1:8000/")
     finally:
         db.close()

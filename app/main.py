@@ -5,9 +5,12 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
+from fastapi.responses import JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
+from starlette.middleware.sessions import SessionMiddleware
 
+from app.auth import Forbidden, NotAuthenticated
 from app.config import get_settings
 from app.db import init_db
 from app.routers import api, ui
@@ -20,6 +23,9 @@ NEWS2 early-warning scoring.
 
 **Clinical decision support only.** Auto-extracted records are created as
 *unverified* and must be checked against the original scan by a clinician.
+
+Authenticate with a session cookie (log in at `/login`) or, for devices and
+integrations, `Authorization: Bearer <token>`.
 """
 
 
@@ -37,6 +43,28 @@ def create_app() -> FastAPI:
         version="0.1.0",
         lifespan=lifespan,
     )
+    settings = get_settings()
+    app.add_middleware(
+        SessionMiddleware,
+        secret_key=settings.secret_key,
+        max_age=settings.session_max_age,
+        same_site="lax",
+        https_only=settings.cookie_secure,
+    )
+
+    @app.exception_handler(NotAuthenticated)
+    def _not_authenticated(request: Request, exc: NotAuthenticated):
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": "Authentication required."}, status_code=401)
+        return RedirectResponse(f"/login?next={request.url.path}", status_code=303)
+
+    @app.exception_handler(Forbidden)
+    def _forbidden(request: Request, exc: Forbidden):
+        detail = f"Your role ({exc.role.value}) may not {exc.permission}."
+        if request.url.path.startswith("/api/"):
+            return JSONResponse({"detail": detail}, status_code=403)
+        return RedirectResponse(f"/denied?reason={exc.permission}", status_code=303)
+
     app.include_router(api.router)
     app.include_router(ui.router)
 

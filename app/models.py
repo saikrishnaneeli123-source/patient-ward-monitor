@@ -75,6 +75,37 @@ class Consciousness(str, enum.Enum):
     unresponsive = "unresponsive"
 
 
+class Role(str, enum.Enum):
+    """Who may do what. Permissions are defined in ``app.auth.ROLE_PERMISSIONS``."""
+
+    admin = "admin"
+    doctor = "doctor"
+    nurse = "nurse"
+    clerk = "clerk"
+    readonly = "readonly"
+
+
+class User(Base):
+    """A member of ward staff. Actions are attributed to these, not typed names."""
+
+    __tablename__ = "users"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    username: Mapped[str] = mapped_column(String(80), unique=True, index=True)
+    full_name: Mapped[str] = mapped_column(String(160))
+    password_hash: Mapped[str] = mapped_column(String(255))
+    role: Mapped[Role] = mapped_column(Enum(Role), default=Role.readonly)
+    is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Optional bearer token for devices and integrations; stored hashed.
+    api_token_hash: Mapped[str | None] = mapped_column(String(64), unique=True, default=None, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    @property
+    def display(self) -> str:
+        return f"{self.full_name} ({self.role.value})"
+
+
 class Ward(Base):
     __tablename__ = "wards"
 
@@ -148,7 +179,11 @@ class CaseRecord(Base):
     verification: Mapped[VerificationStatus] = mapped_column(
         Enum(VerificationStatus), default=VerificationStatus.unverified
     )
+    # The name is kept alongside the FK so the audit line survives user deletion.
     verified_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    verified_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
     verified_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
     # Provenance of an auto-created record.
@@ -196,6 +231,9 @@ class Upload(Base):
     records_created: Mapped[int] = mapped_column(Integer, default=0)
     records_updated: Mapped[int] = mapped_column(Integer, default=0)
     uploaded_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    uploaded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
     uploaded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
     processed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
 
@@ -211,6 +249,9 @@ class Observation(Base):
     case_record_id: Mapped[int] = mapped_column(ForeignKey("case_records.id", ondelete="CASCADE"), index=True)
     recorded_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     recorded_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    recorded_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
 
     respiratory_rate: Mapped[int | None] = mapped_column(Integer, default=None)
     spo2: Mapped[int | None] = mapped_column(Integer, default=None)
@@ -247,5 +288,8 @@ class Alert(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
     acknowledged_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
     acknowledged_by: Mapped[str | None] = mapped_column(String(120), default=None)
+    acknowledged_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
 
     case_record: Mapped[CaseRecord] = relationship(back_populates="alerts")

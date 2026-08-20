@@ -4,28 +4,30 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import intake, models, services
+from app import auth, intake, models, services
 from app.config import get_settings
 from app.db import get_db
 from app.extraction import ExtractedCaseSheet, detect_content_type, page_count
 from app.schemas import (
-    AcknowledgeIn,
     AlertOut,
     BoardRow,
     CaseRecordCreate,
     CaseRecordOut,
     CaseRecordUpdate,
     IntakeResultOut,
+    MeOut,
     ObservationIn,
     ObservationOut,
     PatientOut,
     SheetOutcomeOut,
     UploadOut,
-    VerifyIn,
+    UserCreate,
+    UserCreated,
+    UserOut,
 )
 
 router = APIRouter(prefix="/api", tags=["api"])
@@ -45,7 +47,7 @@ ACCEPTED_TYPES = {
 # Intake
 # --------------------------------------------------------------------------
 
-def store_upload(db: Session, file: UploadFile, data: bytes, uploaded_by: str | None) -> models.Upload:
+def store_upload(db: Session, file: UploadFile, data: bytes, user: models.User) -> models.Upload:
     """Persist the scan to disk and register it, de-duplicating by content hash."""
     settings = get_settings()
     content_type = detect_content_type(file.filename or "scan", file.content_type)
@@ -72,7 +74,8 @@ def store_upload(db: Session, file: UploadFile, data: bytes, uploaded_by: str | 
         size_bytes=len(data),
         sha256=digest,
         page_count=page_count(data, content_type),
-        uploaded_by=uploaded_by,
+        uploaded_by=user.full_name,
+        uploaded_by_id=user.id,
     )
     db.add(upload)
     db.commit()
@@ -105,8 +108,8 @@ def _result_out(result: intake.IntakeResult) -> IntakeResultOut:
 @router.post("/uploads", response_model=list[IntakeResultOut], status_code=201)
 async def upload_case_sheets(
     files: list[UploadFile] = File(..., description="Scanned case sheets (PDF or image)."),
-    uploaded_by: str | None = Form(default=None),
     db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.UPLOAD)),
 ) -> list[IntakeResultOut]:
     """Upload one or more scans; each detected patient gets its own case record."""
     results = []
@@ -114,13 +117,17 @@ async def upload_case_sheets(
         data = await file.read()
         if not data:
             raise HTTPException(400, f"'{file.filename}' is empty.")
-        upload = store_upload(db, file, data, uploaded_by)
+        upload = store_upload(db, file, data, user)
         results.append(_result_out(intake.process_upload(db, upload, data)))
     return results
 
 
 @router.post("/uploads/{upload_id}/reprocess", response_model=IntakeResultOut)
-def reprocess_upload(upload_id: int, db: Session = Depends(get_db)) -> IntakeResultOut:
+def reprocess_upload(
+    upload_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.UPLOAD)),
+) -> IntakeResultOut:
     """Re-run extraction, e.g. after configuring an API key or a model change."""
     upload = db.get(models.Upload, upload_id)
     if upload is None:
@@ -132,13 +139,21 @@ def reprocess_upload(upload_id: int, db: Session = Depends(get_db)) -> IntakeRes
 
 
 @router.get("/uploads", response_model=list[UploadOut])
-def list_uploads(limit: int = Query(50, le=200), db: Session = Depends(get_db)) -> list[models.Upload]:
+def list_uploads(
+    limit: int = Query(50, le=200),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[models.Upload]:
     stmt = select(models.Upload).order_by(models.Upload.id.desc()).limit(limit)
     return list(db.execute(stmt).scalars().all())
 
 
 @router.get("/uploads/{upload_id}", response_model=UploadOut)
-def get_upload(upload_id: int, db: Session = Depends(get_db)) -> models.Upload:
+def get_upload(
+    upload_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> models.Upload:
     upload = db.get(models.Upload, upload_id)
     if upload is None:
         raise HTTPException(404, "Upload not found.")
@@ -154,6 +169,7 @@ def list_patients(
     q: str | None = Query(default=None, description="Search by name or hospital number."),
     limit: int = Query(50, le=200),
     db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
 ) -> list[models.Patient]:
     stmt = select(models.Patient).order_by(models.Patient.full_name).limit(limit)
     if q:
@@ -163,7 +179,11 @@ def list_patients(
 
 
 @router.get("/patients/{patient_id}", response_model=PatientOut)
-def get_patient(patient_id: int, db: Session = Depends(get_db)) -> models.Patient:
+def get_patient(
+    patient_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> models.Patient:
     patient = db.get(models.Patient, patient_id)
     if patient is None:
         raise HTTPException(404, "Patient not found.")
@@ -176,12 +196,17 @@ def list_cases(
     ward: str | None = None,
     verification: models.VerificationStatus | None = None,
     db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
 ) -> list[models.CaseRecord]:
     return services.case_query(db, status=status, ward=ward, verification=verification)
 
 
 @router.post("/cases", response_model=CaseRecordOut, status_code=201)
-def create_case(payload: CaseRecordCreate, db: Session = Depends(get_db)) -> models.CaseRecord:
+def create_case(
+    payload: CaseRecordCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.EDIT_CASE)),
+) -> models.CaseRecord:
     """Create a case record by hand (illegible scan, or extraction disabled)."""
     sheet = ExtractedCaseSheet(
         full_name=payload.full_name,
@@ -207,8 +232,11 @@ def create_case(payload: CaseRecordCreate, db: Session = Depends(get_db)) -> mod
         raise HTTPException(400, outcome.reason or "Could not create the case record.")
     case = outcome.case_record
     case.medications = payload.medications
-    # Typed in by a human, so it is verified on creation.
+    # Typed in by a human, so it is verified on creation — by them.
     case.verification = models.VerificationStatus.verified
+    case.verified_by = user.full_name
+    case.verified_by_id = user.id
+    case.verified_at = datetime.now(timezone.utc)
     case.extraction_confidence = None
     case.extraction_warnings = []
     case.extraction_payload = None
@@ -217,7 +245,11 @@ def create_case(payload: CaseRecordCreate, db: Session = Depends(get_db)) -> mod
 
 
 @router.get("/cases/{case_id}", response_model=CaseRecordOut)
-def get_case(case_id: int, db: Session = Depends(get_db)) -> models.CaseRecord:
+def get_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> models.CaseRecord:
     case = services.get_case(db, case_id)
     if case is None:
         raise HTTPException(404, "Case record not found.")
@@ -225,7 +257,12 @@ def get_case(case_id: int, db: Session = Depends(get_db)) -> models.CaseRecord:
 
 
 @router.patch("/cases/{case_id}", response_model=CaseRecordOut)
-def update_case(case_id: int, payload: CaseRecordUpdate, db: Session = Depends(get_db)) -> models.CaseRecord:
+def update_case(
+    case_id: int,
+    payload: CaseRecordUpdate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.EDIT_CASE)),
+) -> models.CaseRecord:
     case = services.get_case(db, case_id)
     if case is None:
         raise HTTPException(404, "Case record not found.")
@@ -238,12 +275,20 @@ def update_case(case_id: int, payload: CaseRecordUpdate, db: Session = Depends(g
 
 
 @router.post("/cases/{case_id}/verify", response_model=CaseRecordOut)
-def verify_case(case_id: int, payload: VerifyIn, db: Session = Depends(get_db)) -> models.CaseRecord:
-    """Confirm an auto-extracted record against the original scan."""
+def verify_case(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VERIFY_CASE)),
+) -> models.CaseRecord:
+    """Confirm an auto-extracted record against the original scan.
+
+    Attributed to the authenticated user — verification is an audit event, so it
+    is never taken from a name typed into the request.
+    """
     case = services.get_case(db, case_id)
     if case is None:
         raise HTTPException(404, "Case record not found.")
-    return services.verify_case(db, case, payload.verified_by)
+    return services.verify_case(db, case, user)
 
 
 # --------------------------------------------------------------------------
@@ -251,13 +296,23 @@ def verify_case(case_id: int, payload: VerifyIn, db: Session = Depends(get_db)) 
 # --------------------------------------------------------------------------
 
 @router.post("/cases/{case_id}/observations", response_model=ObservationOut, status_code=201)
-def add_observation(case_id: int, payload: ObservationIn, db: Session = Depends(get_db)) -> models.Observation:
+def add_observation(
+    case_id: int,
+    payload: ObservationIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.RECORD_OBSERVATIONS)),
+) -> models.Observation:
     """Record a set of vitals; NEWS2 is scored and alerts raised automatically."""
     case = services.get_case(db, case_id)
     if case is None:
         raise HTTPException(404, "Case record not found.")
 
-    observation = models.Observation(case_record_id=case.id, **payload.model_dump(exclude_none=True))
+    observation = models.Observation(
+        case_record_id=case.id,
+        recorded_by=user.full_name,
+        recorded_by_id=user.id,
+        **payload.model_dump(exclude_none=True),
+    )
     intake.score_observation(observation)
     db.add(observation)
     db.flush()
@@ -268,7 +323,10 @@ def add_observation(case_id: int, payload: ObservationIn, db: Session = Depends(
 
 @router.get("/cases/{case_id}/observations", response_model=list[ObservationOut])
 def list_observations(
-    case_id: int, limit: int = Query(100, le=500), db: Session = Depends(get_db)
+    case_id: int,
+    limit: int = Query(100, le=500),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
 ) -> list[models.Observation]:
     stmt = (
         select(models.Observation)
@@ -280,14 +338,21 @@ def list_observations(
 
 
 @router.get("/board", response_model=list[BoardRow])
-def get_board(ward: str | None = None, db: Session = Depends(get_db)) -> list[BoardRow]:
+def get_board(
+    ward: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[BoardRow]:
     """The ward board: every active case, sickest first."""
     return services.board(db, ward=ward)
 
 
 @router.get("/alerts", response_model=list[AlertOut])
 def list_alerts(
-    open_only: bool = True, limit: int = Query(50, le=200), db: Session = Depends(get_db)
+    open_only: bool = True,
+    limit: int = Query(50, le=200),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
 ) -> list[models.Alert]:
     if open_only:
         return services.open_alerts(db, limit)
@@ -296,11 +361,68 @@ def list_alerts(
 
 
 @router.post("/alerts/{alert_id}/acknowledge", response_model=AlertOut)
-def acknowledge_alert(alert_id: int, payload: AcknowledgeIn, db: Session = Depends(get_db)) -> models.Alert:
+def acknowledge_alert(
+    alert_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.ACKNOWLEDGE_ALERT)),
+) -> models.Alert:
     alert = db.get(models.Alert, alert_id)
     if alert is None:
         raise HTTPException(404, "Alert not found.")
-    alert.acknowledged_at = datetime.now(timezone.utc)
-    alert.acknowledged_by = payload.acknowledged_by
-    db.commit()
+    services.acknowledge(db, alert, user)
     return alert
+
+
+# --------------------------------------------------------------------------
+# Identity and user administration
+# --------------------------------------------------------------------------
+
+@router.get("/me", response_model=MeOut)
+def whoami(user: models.User = Depends(auth.require_login)) -> MeOut:
+    """The caller's identity and what their role allows."""
+    return MeOut(user=UserOut.model_validate(user), permissions=sorted(auth.permissions_for(user.role)))
+
+
+@router.get("/users", response_model=list[UserOut])
+def list_users(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.MANAGE_USERS)),
+) -> list[models.User]:
+    return list(db.execute(select(models.User).order_by(models.User.username)).scalars().all())
+
+
+@router.post("/users", response_model=UserCreated, status_code=201)
+def create_staff_user(
+    payload: UserCreate,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.MANAGE_USERS)),
+) -> UserCreated:
+    try:
+        created, token = auth.create_user(
+            db,
+            username=payload.username,
+            full_name=payload.full_name,
+            password=payload.password,
+            role=payload.role,
+            with_token=payload.issue_api_token,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return UserCreated(user=UserOut.model_validate(created), api_token=token)
+
+
+@router.post("/users/{user_id}/deactivate", response_model=UserOut)
+def deactivate_user(
+    user_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.MANAGE_USERS)),
+) -> models.User:
+    """Deactivating revokes sessions and any API token immediately."""
+    target = db.get(models.User, user_id)
+    if target is None:
+        raise HTTPException(404, "User not found.")
+    if target.id == user.id:
+        raise HTTPException(400, "You cannot deactivate your own account.")
+    target.is_active = False
+    db.commit()
+    return target

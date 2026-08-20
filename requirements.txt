@@ -9,4 +9,5 @@ anthropic>=0.75.0
 pypdf==6.1.1
 pillow==11.3.0
 pytest==8.4.2
+itsdangerous==2.2.0
 httpx==0.28.1

@@ -9,15 +9,22 @@
 <body>
 <header class="topbar">
   <a class="brand" href="/">🏥 Ward Monitor</a>
+  {% if user %}
   <nav>
     <a href="/">Board</a>
-    <a href="/upload">Upload case sheets</a>
+    {% if can(user, PERMS.UPLOAD) %}<a href="/upload">Upload case sheets</a>{% endif %}
     <a href="/review">Review queue</a>
+    {% if can(user, PERMS.MANAGE_USERS) %}<a href="/users">Staff</a>{% endif %}
     <a href="/docs">API</a>
   </nav>
+  <div class="whoami">
+    <span>{{ user.full_name }} <small>{{ user.role.value }}</small></span>
+    <form method="post" action="/logout"><button class="link" type="submit">Sign out</button></form>
+  </div>
+  {% endif %}
 </header>
 
-{% if not extraction_enabled %}
+{% if user and not extraction_enabled %}
 <p class="banner warn">
   Automatic extraction is off — <code>ANTHROPIC_API_KEY</code> is not set. Scans are still stored,
   and records can be created manually.

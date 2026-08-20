@@ -1,0 +1,77 @@
+{% extends "base.html" %}
+{% block title %}Staff accounts{% endblock %}
+{% block content %}
+<h1>Staff accounts</h1>
+
+{% if error %}<p class="banner warn">{{ error }}</p>{% endif %}
+{% if created %}
+  <p class="banner ok">Created <strong>{{ created }}</strong>.</p>
+  {% if token %}
+  <div class="card verify">
+    <h2>API token for {{ created }}</h2>
+    <p>Copy it now — only a hash is stored, so it cannot be shown again.</p>
+    <pre class="token">{{ token }}</pre>
+    <p class="muted">Use as <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+  </div>
+  {% endif %}
+{% endif %}
+
+<div class="columns">
+  <section class="card">
+    <h2>Add an account</h2>
+    <form method="post" action="/users">
+      <label>Username <input type="text" name="username" required></label>
+      <label>Full name <input type="text" name="full_name" required></label>
+      <label>Password <input type="password" name="password" minlength="8" required></label>
+      <label>Role
+        <select name="role">
+          {% for role in roles %}<option value="{{ role.value }}">{{ role.value }}</option>{% endfor %}
+        </select>
+      </label>
+      <label class="check"><input type="checkbox" name="issue_api_token"> Issue an API token (for devices)</label>
+      <button type="submit">Create account</button>
+    </form>
+  </section>
+
+  <section class="card">
+    <h2>What each role may do</h2>
+    <table class="mini">
+      <thead><tr><th>Role</th><th>Permissions</th></tr></thead>
+      <tbody>
+      {% for role in roles %}
+        <tr>
+          <td><strong>{{ role.value }}</strong></td>
+          <td>{{ role_permissions[role]|sort|join(', ') if role_permissions[role] else 'none' }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+  </section>
+</div>
+
+<section class="card">
+  <h2>Accounts</h2>
+  <table class="mini">
+    <thead><tr><th>Username</th><th>Name</th><th>Role</th><th>Last sign-in</th><th>Status</th><th></th></tr></thead>
+    <tbody>
+    {% for member in staff %}
+      <tr>
+        <td>{{ member.username }}</td>
+        <td>{{ member.full_name }}</td>
+        <td>{{ member.role.value }}</td>
+        <td>{{ member.last_login_at.strftime('%d %b %H:%M') if member.last_login_at else 'never' }}</td>
+        <td>{% if member.is_active %}<span class="tag verified">active</span>
+            {% else %}<span class="tag unverified">deactivated</span>{% endif %}</td>
+        <td>
+          {% if member.is_active and member.id != user.id %}
+          <form method="post" action="/users/{{ member.id }}/deactivate">
+            <button class="link" type="submit">deactivate</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

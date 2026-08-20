@@ -93,12 +93,22 @@ def get_case(db: Session, case_id: int) -> models.CaseRecord | None:
     return db.get(models.CaseRecord, case_id)
 
 
-def verify_case(db: Session, case: models.CaseRecord, verified_by: str) -> models.CaseRecord:
+def verify_case(db: Session, case: models.CaseRecord, user: models.User) -> models.CaseRecord:
+    """Record who confirmed this record against the scan, and when."""
     case.verification = models.VerificationStatus.verified
-    case.verified_by = verified_by
+    case.verified_by = user.full_name
+    case.verified_by_id = user.id
     case.verified_at = datetime.now(timezone.utc)
     db.commit()
     return case
+
+
+def acknowledge(db: Session, alert: models.Alert, user: models.User) -> models.Alert:
+    alert.acknowledged_at = datetime.now(timezone.utc)
+    alert.acknowledged_by = user.full_name
+    alert.acknowledged_by_id = user.id
+    db.commit()
+    return alert
 
 
 # Values clinicians write to mean "no allergies" — these must not render as a

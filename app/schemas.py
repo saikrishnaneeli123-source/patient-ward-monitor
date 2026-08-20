@@ -5,7 +5,7 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import CaseStatus, Consciousness, Sex, UploadStatus, VerificationStatus
+from app.models import CaseStatus, Consciousness, Role, Sex, UploadStatus, VerificationStatus
 
 
 class ORMModel(BaseModel):
@@ -25,8 +25,11 @@ class PatientOut(ORMModel):
 
 
 class ObservationIn(BaseModel):
+    # `recorded_by` is deliberately absent: it is taken from the authenticated
+    # user so an observation cannot be attributed to another member of staff.
+    model_config = ConfigDict(extra="forbid")
+
     recorded_at: datetime | None = None
-    recorded_by: str | None = None
     respiratory_rate: int | None = Field(default=None, ge=0, le=90)
     spo2: int | None = Field(default=None, ge=0, le=100)
     on_oxygen: bool = False
@@ -138,12 +141,32 @@ class CaseRecordCreate(BaseModel):
     notes: str | None = None
 
 
-class VerifyIn(BaseModel):
-    verified_by: str = Field(min_length=1, max_length=120)
+class UserOut(ORMModel):
+    id: int
+    username: str
+    full_name: str
+    role: Role
+    is_active: bool
+    last_login_at: datetime | None
 
 
-class AcknowledgeIn(BaseModel):
-    acknowledged_by: str = Field(min_length=1, max_length=120)
+class UserCreate(BaseModel):
+    username: str = Field(min_length=1, max_length=80)
+    full_name: str = Field(min_length=1, max_length=160)
+    password: str = Field(min_length=8, max_length=200)
+    role: Role
+    issue_api_token: bool = False
+
+
+class UserCreated(BaseModel):
+    user: UserOut
+    # Shown exactly once — only its SHA-256 is stored.
+    api_token: str | None = None
+
+
+class MeOut(BaseModel):
+    user: UserOut
+    permissions: list[str]
 
 
 class SheetOutcomeOut(BaseModel):

@@ -9,11 +9,7 @@ def sheet(**overrides) -> ExtractedCaseSheet:
 
 
 def upload(client, png_bytes, name="sheet.png"):
-    return client.post(
-        "/api/uploads",
-        files=[("files", (name, png_bytes, "image/png"))],
-        data={"uploaded_by": "Sr. Mary"},
-    )
+    return client.post("/api/uploads", files=[("files", (name, png_bytes, "image/png"))])
 
 
 def test_healthz(client):
@@ -98,9 +94,10 @@ def test_verify_flow(client, png_bytes, fake_extractor):
     upload(client, png_bytes)
     case_id = client.get("/api/cases").json()[0]["id"]
 
-    verified = client.post(f"/api/cases/{case_id}/verify", json={"verified_by": "Dr Iyer"}).json()
+    verified = client.post(f"/api/cases/{case_id}/verify").json()
     assert verified["verification"] == "verified"
-    assert verified["verified_by"] == "Dr Iyer"
+    # Attributed to the signed-in user, not to a name in the request body.
+    assert verified["verified_by"] == "Test Doctor"
     assert verified["verified_at"] is not None
 
     assert client.get("/api/cases", params={"verification": "unverified"}).json() == []
@@ -114,8 +111,7 @@ def test_recording_observations_scores_and_alerts(client, png_bytes, fake_extrac
     observation = client.post(
         f"/api/cases/{case_id}/observations",
         json={"respiratory_rate": 26, "spo2": 89, "on_oxygen": True, "systolic_bp": 88,
-              "pulse": 128, "temperature_c": 39.2, "consciousness": "confusion",
-              "recorded_by": "N. Patel"},
+              "pulse": 128, "temperature_c": 39.2, "consciousness": "confusion"},
     ).json()
 
     assert observation["news2_score"] == 18
@@ -125,10 +121,8 @@ def test_recording_observations_scores_and_alerts(client, png_bytes, fake_extrac
     alerts = client.get("/api/alerts").json()
     assert any(a["severity"] == "critical" for a in alerts)
 
-    acked = client.post(
-        f"/api/alerts/{alerts[0]['id']}/acknowledge", json={"acknowledged_by": "Dr Iyer"}
-    ).json()
-    assert acked["acknowledged_by"] == "Dr Iyer"
+    acked = client.post(f"/api/alerts/{alerts[0]['id']}/acknowledge").json()
+    assert acked["acknowledged_by"] == "Test Doctor"
     assert client.get("/api/alerts").json() == [] or all(
         a["id"] != acked["id"] for a in client.get("/api/alerts").json()
     )
@@ -194,13 +188,13 @@ def test_ui_upload_and_verify_round_trip(client, png_bytes, fake_extractor):
     page = client.post(
         "/upload",
         files=[("files", ("scan.png", png_bytes, "image/png"))],
-        data={"uploaded_by": "Sr. Mary"},
+    
     )
     assert page.status_code == 200
     assert "Asha Rao" in page.text
 
     case_id = client.get("/api/cases").json()[0]["id"]
-    client.post(f"/cases/{case_id}/verify", data={"verified_by": "Dr Iyer"}, follow_redirects=True)
+    client.post(f"/cases/{case_id}/verify", follow_redirects=True)
     assert client.get(f"/api/cases/{case_id}").json()["verification"] == "verified"
 
 
@@ -212,7 +206,7 @@ def test_ui_observation_form(client, png_bytes, fake_extractor):
     client.post(
         f"/cases/{case_id}/observations",
         data={"respiratory_rate": "22", "spo2": "94", "on_oxygen": "on", "systolic_bp": "105",
-              "pulse": "96", "temperature_c": "38.2", "consciousness": "alert", "recorded_by": "N. Patel"},
+              "pulse": "96", "temperature_c": "38.2", "consciousness": "alert"},
         follow_redirects=True,
     )
     observations = client.get(f"/api/cases/{case_id}/observations").json()
