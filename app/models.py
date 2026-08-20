@@ -80,6 +80,11 @@ class Shift(str, enum.Enum):
     night = "night"
 
 
+class SummaryStatus(str, enum.Enum):
+    draft = "draft"
+    signed = "signed"
+
+
 class Consciousness(str, enum.Enum):
     """ACVPU scale."""
 
@@ -227,6 +232,18 @@ class CaseRecord(Base):
     clinical_notes: Mapped[list["Note"]] = relationship(
         back_populates="case_record", cascade="all, delete-orphan", order_by="Note.created_at.desc()"
     )
+    discharge_summaries: Mapped[list["DischargeSummary"]] = relationship(
+        back_populates="case_record", cascade="all, delete-orphan",
+        order_by="DischargeSummary.version.desc()",
+    )
+
+    @property
+    def latest_summary(self) -> "DischargeSummary | None":
+        return self.discharge_summaries[0] if self.discharge_summaries else None
+
+    @property
+    def signed_summary(self) -> "DischargeSummary | None":
+        return next((s for s in self.discharge_summaries if s.is_signed), None)
 
     @property
     def latest_observation(self) -> "Observation | None":
@@ -401,3 +418,45 @@ class AuditEvent(Base):
 
     prev_hash: Mapped[str] = mapped_column(String(64))
     entry_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+
+
+class DischargeSummary(Base):
+    """A point-in-time discharge summary compiled from the case record.
+
+    ``content`` is a snapshot taken at generation, not a live view: once a doctor
+    signs a summary it must keep saying what they signed, even if the record
+    changes afterwards. Regenerating produces a new version rather than editing
+    an old one, and a signed version can never be altered or deleted.
+    """
+
+    __tablename__ = "discharge_summaries"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_record_id: Mapped[int] = mapped_column(
+        ForeignKey("case_records.id", ondelete="CASCADE"), index=True
+    )
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    status: Mapped[SummaryStatus] = mapped_column(Enum(SummaryStatus), default=SummaryStatus.draft)
+
+    # The compiled document, section by section.
+    content: Mapped[dict] = mapped_column(JSON, default=dict)
+    # Free text the clinician writes themselves — never generated.
+    follow_up: Mapped[str | None] = mapped_column(Text, default=None)
+    discharge_destination: Mapped[str | None] = mapped_column(String(200), default=None)
+
+    generated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    generated_by: Mapped[str] = mapped_column(String(160))
+    generated_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    signed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+    signed_by: Mapped[str | None] = mapped_column(String(160), default=None)
+    signed_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+
+    case_record: Mapped[CaseRecord] = relationship(back_populates="discharge_summaries")
+
+    @property
+    def is_signed(self) -> bool:
+        return self.status == SummaryStatus.signed

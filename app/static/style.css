@@ -31,7 +31,7 @@ small { display: block; color: var(--muted); font-size: 12px; }
 .topbar nav { display: flex; gap: 18px; }
 
 main { max-width: 1200px; margin: 0 auto; padding: 24px; }
-footer {
+.app-footer {
   max-width: 1200px; margin: 40px auto; padding: 16px 24px;
   border-top: 1px solid var(--line); color: var(--muted); font-size: 13px;
 }
@@ -205,3 +205,54 @@ code.hash {
 ul.changes { margin: 6px 0 0; padding-left: 16px; font-size: 13px; }
 ul.changes .was { color: var(--muted); text-decoration: line-through; }
 ul.changes .now { color: var(--ink); font-weight: 600; }
+
+/* --- Discharge summary --------------------------------------------------- */
+.summary-actions { display: flex; align-items: center; gap: 10px; }
+.summary-doc {
+  background: #fff; border: 1px solid var(--line); border-radius: 12px;
+  padding: 32px 40px; margin-bottom: 18px; max-width: 900px;
+}
+.doc-head { border-bottom: 2px solid var(--ink); padding-bottom: 12px; margin-bottom: 20px; }
+.doc-head h2 { font-size: 22px; margin: 0; letter-spacing: .02em; }
+.doc-meta { color: var(--muted); font-size: 13px; margin: 4px 0 0; }
+.doc-draft { color: var(--high); font-weight: 700; letter-spacing: .08em; font-size: 13px; margin: 8px 0 0; }
+.doc-caveat {
+  background: #fef5e7; border: 1px solid #f0d9a8; color: #7c4a03;
+  padding: 10px 14px; border-radius: 8px; font-size: 14px;
+}
+.doc-allergy {
+  border: 2px solid var(--high); color: var(--high); font-weight: 700;
+  padding: 10px 14px; border-radius: 8px; letter-spacing: .02em;
+}
+.doc-allergy.muted-box { border-color: var(--line); color: var(--muted); font-weight: 500; }
+.summary-doc section { margin-bottom: 22px; }
+.summary-doc h3 {
+  font-size: 13px; text-transform: uppercase; letter-spacing: .06em;
+  color: var(--muted); border-bottom: 1px solid var(--line);
+  padding-bottom: 4px; margin: 18px 0 8px;
+}
+.summary-doc p { margin: 4px 0; }
+.summary-doc ul { margin: 4px 0; padding-left: 20px; }
+.summary-doc ul.meds li { margin-bottom: 3px; }
+.doc-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 24px; }
+.doc-grid dl { grid-template-columns: 120px 1fr; }
+.doc-note { border-left: 3px solid var(--line); padding-left: 12px; margin-bottom: 12px; }
+.doc-note p { margin: 2px 0; font-size: 14px; }
+.follow-up { white-space: pre-wrap; }
+.doc-foot { border-top: 2px solid var(--ink); padding-top: 12px; margin-top: 24px; }
+.doc-provenance { color: var(--muted); font-size: 12px; margin-top: 8px; }
+.sign-form { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+/* The printed document is the deliverable: drop the app chrome entirely. */
+@media print {
+  /* Hide the app chrome only. Never `footer` on its own: the summary's own
+     signature block is a <footer>, and printing it unsigned would be worse
+     than not printing it at all. */
+  .no-print, .topbar, .app-footer, .banner, .sign-form, form { display: none !important; }
+  body { background: #fff; }
+  main { max-width: none; padding: 0; }
+  .summary-doc { border: none; border-radius: 0; padding: 0; max-width: none; }
+  .summary-doc section { break-inside: avoid; }
+  .doc-allergy { border-width: 1pt; }
+  a { text-decoration: none; color: inherit; }
+}

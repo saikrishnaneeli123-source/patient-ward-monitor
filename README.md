@@ -14,6 +14,8 @@ updates their record instead of duplicating them.
 
 ![Shift handover](docs/handover.png)
 
+![Discharge summary](docs/discharge-summary.png)
+
 ---
 
 ## Quick start
@@ -100,7 +102,7 @@ Every page and endpoint requires a signed-in user. Browsers use a signed session
 cookie; devices and integrations send `Authorization: Bearer <token>`, where only
 a SHA-256 of the token is stored.
 
-| | view | upload | obs | verify | notes | edit | discharge | audit | users |
+| | view | upload | obs | verify | notes | edit | discharge¹ | audit | users |
 |---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
 | **admin** | ● | ● | ● | ● | ● | ● | ● | ● | ● |
 | **doctor** | ● | ● | ● | ● | ● | ● | ● | | |
@@ -108,10 +110,12 @@ a SHA-256 of the token is stored.
 | **clerk** | ● | ● | | | | | | | |
 | **readonly** | ● | | | | | | | | |
 
+¹ `discharge` also gates generating and signing a discharge summary.
+
 Nurses may confirm a transcription against the sheet, because that is a
-transcription check rather than a clinical decision; changing a diagnosis or
-discharging a patient stays with doctors. Clerks scan paperwork and read the
-board without clinical authority.
+transcription check rather than a clinical decision; changing a diagnosis,
+discharging a patient, or signing a discharge summary stays with doctors. Clerks
+scan paperwork and read the board without clinical authority.
 
 Two rules make the audit trail mean something:
 
@@ -145,6 +149,42 @@ took it and when is recorded. The author cannot receive their own handover: the
 receipt exists to record that care passed to someone else. Handovers nobody has
 taken are flagged on the case and listed at `/api/handovers/outstanding` — an
 unreceived handover is the classic shift-change failure.
+
+---
+
+## The discharge summary
+
+A summary is compiled from the case record and printed from the case page:
+demographics, admission and discharge dates, length of stay, diagnosis,
+comorbidities, allergies, medications, the NEWS2 course, escalations raised
+during the admission, notes and handovers, and the tasks still outstanding.
+
+**Nothing in it is written by a model, and that is deliberate.** A discharge
+summary follows the patient out of the hospital; a plausible-sounding sentence
+that is not in the record is precisely the failure to design out. So every
+clinical line is copied from a field or computed arithmetically from recorded
+observations, and anything absent prints as `Not recorded` rather than being
+smoothed over. The only prose is the discharge destination and the follow-up
+plan, which the clinician types themselves.
+
+The document says so at the foot, every time:
+
+> Compiled automatically from the case record. Every clinical entry is copied
+> from the record or computed from recorded observations; nothing is inferred.
+> Fields left blank in the record appear as 'Not recorded'.
+
+The rest of the safety posture carries over:
+
+- **Draft until signed.** An unsigned summary is stamped `DRAFT — not valid
+  until signed by a doctor` and footed with *Not to be issued to the patient or
+  the GP*.
+- **Signed means frozen.** `content` is a point-in-time snapshot, not a live
+  view, so a signed summary keeps saying what was signed even if the record
+  changes afterwards — and the ORM, plus a SQLite trigger, refuse to alter or
+  delete it. Corrections are a new version; earlier versions are kept.
+- **A summary built on an unverified transcription says so**, in a caveat at the
+  top of the document.
+- Generating, editing and signing are each audited.
 
 ---
 
@@ -250,6 +290,10 @@ Interactive docs at `/docs`. Everything the UI does is available as JSON.
 | `GET` | `/api/handovers/outstanding` | Handovers nobody has taken |
 | `GET` | `/api/cases/{id}/audit` | One record's activity |
 | `GET` | `/api/audit` · `/api/audit/verify` | The log, and its chain status (admin) |
+| `POST`/`GET` | `/api/cases/{id}/discharge-summary` | Generate a draft / read the latest |
+| `GET` | `/api/cases/{id}/discharge-summaries` | Every version |
+| `PATCH` | `/api/discharge-summaries/{id}` | Edit a draft's follow-up plan |
+| `POST` | `/api/discharge-summaries/{id}/sign` | Sign it off — freezes the document |
 
 Example:
 
@@ -308,12 +352,13 @@ app/
   extraction.py    Claude vision/PDF → structured sheets (pluggable backend)
   intake.py        identity matching, record creation, safety rules
   scoring.py       NEWS2
+  summaries.py     discharge summary composition (deterministic, no model)
   charts.py        server-rendered inline SVG for the vitals trend
   services.py      queries shared by API and UI
   routers/         api.py (JSON) · ui.py (HTML)
-  templates/       login, board, upload, review, case, users, audit
+  templates/       login, board, upload, review, case, users, audit, summary
 scripts/           seed_demo.py · create_user.py
-tests/             258 tests
+tests/             309 tests
 ```
 
 `extraction.set_extractor()` swaps the backend, which is how the tests run the
@@ -324,7 +369,7 @@ whole pipeline without touching the API.
 ## Tests
 
 ```bash
-pytest -q      # 258 tests
+pytest -q      # 309 tests
 ```
 
 Covers the NEWS2 chart parameter by parameter, identity matching and
@@ -332,8 +377,9 @@ de-duplication, the no-overwrite rules, alert escalation, the full role matrix
 against real endpoints, login and lockout behaviour, chart geometry and its
 legibility rules, append-only enforcement through both the ORM and raw SQL,
 tamper *detection* (entries are altered and deleted with the triggers dropped,
-and the chain is asserted to notice), handover receipt rules, and the HTTP layer
-end to end.
+and the chain is asserted to notice), handover receipt rules, discharge-summary compilation (including that an empty
+record yields no invented clinical text), signing and freezing, and the HTTP
+layer end to end.
 
 ---
 

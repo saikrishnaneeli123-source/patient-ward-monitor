@@ -145,6 +145,34 @@
 </section>
 {% endif %}
 
+<section class="card" id="discharge">
+  <h2>Discharge summary</h2>
+  {% if summary %}
+    <p>
+      Version {{ summary.version }},
+      {% if summary.is_signed %}
+        <span class="tag verified">signed by {{ summary.signed_by }}</span>
+        on {{ summary.signed_at.strftime('%d %b %Y %H:%M') }}.
+      {% else %}
+        <span class="tag unverified">draft</span>
+        compiled {{ summary.generated_at.strftime('%d %b %H:%M') }} by {{ summary.generated_by }}.
+      {% endif %}
+    </p>
+    <p><a class="button" href="/cases/{{ case.id }}/summary">Open the summary</a></p>
+  {% elif can(user, PERMS.DISCHARGE) %}
+    <p class="muted">
+      Compiled from this record — diagnosis, comorbidities, allergies, medications, the
+      NEWS2 course, escalations and handovers. Nothing is generated; the follow-up plan is
+      yours to write.
+    </p>
+    <form method="post" action="/cases/{{ case.id }}/summary">
+      <button type="submit">Generate a discharge summary</button>
+    </form>
+  {% else %}
+    <p class="empty">No discharge summary yet. A doctor generates and signs it.</p>
+  {% endif %}
+</section>
+
 <section class="card" id="notes">
   <h2>Notes and handover</h2>
   <p class="lede">

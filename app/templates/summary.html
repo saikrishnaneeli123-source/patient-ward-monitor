@@ -1,0 +1,211 @@
+{% extends "base.html" %}
+{% block title %}Discharge summary — {{ case.patient.full_name }}{% endblock %}
+{% block content %}
+
+<div class="page-head no-print">
+  <div>
+    <h1>Discharge summary</h1>
+    <p class="muted">
+      {{ case.patient.full_name }} · {{ case.case_number }} ·
+      version {{ summary.version }} of {{ versions|length }}
+    </p>
+  </div>
+  <div class="summary-actions">
+    {% if summary.is_signed %}
+      <span class="tag verified">signed by {{ summary.signed_by }}</span>
+    {% else %}
+      <span class="tag unverified">draft — not signed</span>
+    {% endif %}
+    <button onclick="window.print()">Print</button>
+    <a class="button" href="/cases/{{ case.id }}">Back to case</a>
+  </div>
+</div>
+
+{% if versions|length > 1 %}
+<div class="filters no-print">
+  {% for v in versions %}
+    <a class="chip {% if v.id == summary.id %}on{% endif %}"
+       href="/cases/{{ case.id }}/summary?version={{ v.version }}">
+      v{{ v.version }} {{ 'signed' if v.is_signed else 'draft' }}
+    </a>
+  {% endfor %}
+</div>
+{% endif %}
+
+{% set c = summary.content %}
+
+<article class="summary-doc">
+  <header class="doc-head">
+    <h2>Discharge summary</h2>
+    <p class="doc-meta">
+      {{ c.admission.case_number }} · compiled {{ summary.generated_at.strftime('%d %b %Y %H:%M') }}
+      by {{ summary.generated_by }}
+    </p>
+    {% if not summary.is_signed %}
+      <p class="doc-draft">DRAFT — not valid until signed by a doctor.</p>
+    {% endif %}
+  </header>
+
+  {% if c.verification.caveat %}
+  <p class="doc-caveat">⚠ {{ c.verification.caveat }}</p>
+  {% endif %}
+
+  {% if c.clinical.allergies != ['None recorded'] %}
+  <p class="doc-allergy">ALLERGIES: {{ c.clinical.allergies|join(', ') }}</p>
+  {% else %}
+  <p class="doc-allergy muted-box">ALLERGIES: none recorded</p>
+  {% endif %}
+
+  <section class="doc-grid">
+    <div>
+      <h3>Patient</h3>
+      <dl>
+        <dt>Name</dt><dd>{{ c.patient.full_name }}</dd>
+        <dt>Hospital no.</dt><dd>{{ c.patient.mrn }}</dd>
+        <dt>Date of birth</dt><dd>{{ c.patient.date_of_birth | when }}</dd>
+        <dt>Age / sex</dt><dd>{{ c.patient.age_years or '?' }} / {{ c.patient.sex }}</dd>
+        <dt>Next of kin</dt><dd>{{ c.patient.next_of_kin }}</dd>
+      </dl>
+    </div>
+    <div>
+      <h3>Admission</h3>
+      <dl>
+        <dt>Admitted</dt><dd>{{ c.admission.admitted | when }}</dd>
+        <dt>Discharged</dt><dd>{{ c.admission.discharged | when }}</dd>
+        <dt>Length of stay</dt><dd>{{ c.admission.length_of_stay }}</dd>
+        <dt>Ward / bed</dt><dd>{{ c.admission.ward }} / {{ c.admission.bed }}</dd>
+        <dt>Consultant</dt><dd>{{ c.admission.consultant }}</dd>
+        <dt>Department</dt><dd>{{ c.admission.department }}</dd>
+      </dl>
+    </div>
+  </section>
+
+  <section>
+    <h3>Reason for admission</h3>
+    <p>{{ c.clinical.presenting_complaint }}</p>
+    <h3>Diagnosis</h3>
+    <p><strong>{{ c.clinical.diagnosis }}</strong></p>
+    {% if c.clinical.history != 'Not recorded' %}
+      <h3>History</h3><p>{{ c.clinical.history }}</p>
+    {% endif %}
+    <h3>Comorbidities</h3>
+    <ul>{% for item in c.clinical.comorbidities %}<li>{{ item }}</li>{% endfor %}</ul>
+  </section>
+
+  <section>
+    <h3>Medications</h3>
+    <ul class="meds">{% for med in c.clinical.medications %}<li>{{ med }}</li>{% endfor %}</ul>
+  </section>
+
+  <section>
+    <h3>Clinical course</h3>
+    <p>{{ c.course.narrative }}</p>
+    {% if c.course.first %}
+    <table class="mini">
+      <thead><tr><th></th><th>When</th><th>NEWS2</th><th>Risk</th></tr></thead>
+      <tbody>
+        {% for label, point in [('First', c.course.first), ('Peak', c.course.peak), ('Last', c.course.last)] %}
+        <tr>
+          <td><strong>{{ label }}</strong></td>
+          <td>{{ point.at | when('%d %b %H:%M') }}</td>
+          <td>{{ point.score }}</td>
+          <td>{{ point.risk }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+    {% endif %}
+    {% if c.course.final_vitals %}
+      <p><strong>Observations at the last round:</strong> {{ c.course.final_vitals|join(' · ') }}</p>
+    {% endif %}
+  </section>
+
+  {% if c.escalations %}
+  <section>
+    <h3>Escalations during admission</h3>
+    <ul>
+      {% for e in c.escalations %}
+      <li>
+        {{ e.at | when('%d %b %H:%M') }} — {{ e.message }}
+        {% if e.acknowledged_by %}<em>(acknowledged by {{ e.acknowledged_by }})</em>
+        {% else %}<em>(not acknowledged)</em>{% endif %}
+      </li>
+      {% endfor %}
+    </ul>
+  </section>
+  {% endif %}
+
+  {% if c.notes %}
+  <section>
+    <h3>Notes and handovers</h3>
+    {% for n in c.notes %}
+    <div class="doc-note">
+      <strong>{{ n.kind }}</strong> —
+      {{ n.at | when('%d %b %H:%M') }},
+      {{ n.author }} ({{ n.role }})
+      {% if n.body %}<p>{{ n.body }}</p>{% endif %}
+      {% if n.situation %}<p><em>S:</em> {{ n.situation }}</p>{% endif %}
+      {% if n.background %}<p><em>B:</em> {{ n.background }}</p>{% endif %}
+      {% if n.assessment %}<p><em>A:</em> {{ n.assessment }}</p>{% endif %}
+      {% if n.recommendation %}<p><em>R:</em> {{ n.recommendation }}</p>{% endif %}
+    </div>
+    {% endfor %}
+  </section>
+  {% endif %}
+
+  {% if c.outstanding %}
+  <section>
+    <h3>Outstanding at discharge</h3>
+    <ul>{% for task in c.outstanding %}<li>{{ task }}</li>{% endfor %}</ul>
+  </section>
+  {% endif %}
+
+  <section>
+    <h3>Discharge destination</h3>
+    <p>{{ summary.discharge_destination or 'Not recorded' }}</p>
+    <h3>Follow-up plan</h3>
+    <p class="follow-up">{{ summary.follow_up or 'Not recorded' }}</p>
+  </section>
+
+  <footer class="doc-foot">
+    {% if summary.is_signed %}
+      <p><strong>Signed by {{ summary.signed_by }}</strong>,
+         {{ summary.signed_at.strftime('%d %b %Y %H:%M') }}</p>
+    {% else %}
+      <p class="doc-draft">Unsigned draft. Not to be issued to the patient or the GP.</p>
+    {% endif %}
+    <p class="doc-provenance">{{ c.provenance }}</p>
+  </footer>
+</article>
+
+{% if can(user, PERMS.DISCHARGE) %}
+<section class="card no-print">
+  <h2>{{ 'This summary is signed' if summary.is_signed else 'Complete and sign' }}</h2>
+  {% if summary.is_signed %}
+    <p class="muted">
+      A signed summary is frozen — it cannot be edited or deleted. If something needs to
+      change, generate a new version from the current record.
+    </p>
+    <form method="post" action="/cases/{{ case.id }}/summary">
+      <button type="submit">Generate a new version</button>
+    </form>
+  {% else %}
+    <form method="post" action="/discharge-summaries/{{ summary.id }}/edit">
+      <label>Discharge destination
+        <input type="text" name="discharge_destination"
+               value="{{ summary.discharge_destination or '' }}"
+               placeholder="e.g. Home with district nurse follow-up">
+      </label>
+      <label>Follow-up plan — written by you, never generated
+        <textarea name="follow_up" rows="4"
+                  placeholder="Clinic appointment, medication changes, what to watch for…">{{ summary.follow_up or '' }}</textarea>
+      </label>
+      <button type="submit">Save draft</button>
+    </form>
+    <form method="post" action="/discharge-summaries/{{ summary.id }}/sign" class="sign-form">
+      <button type="submit">Sign as {{ user.full_name }} — this freezes the document</button>
+    </form>
+  {% endif %}
+</section>
+{% endif %}
+{% endblock %}

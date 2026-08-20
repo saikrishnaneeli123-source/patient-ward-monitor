@@ -12,6 +12,7 @@ from app.models import (
     Role,
     Sex,
     Shift,
+    SummaryStatus,
     UploadStatus,
     VerificationStatus,
 )
@@ -289,3 +290,29 @@ class ChainStatusOut(BaseModel):
     reason: str | None = None
     checked_through: datetime | None = None
     first_entry_at: datetime | None = None
+
+
+# --------------------------------------------------------------------------
+# Discharge summary
+# --------------------------------------------------------------------------
+
+
+class SummaryGenerateIn(BaseModel):
+    """The only prose in a summary is written here, by a clinician."""
+
+    follow_up: str | None = None
+    discharge_destination: str | None = None
+
+
+class DischargeSummaryOut(ORMModel):
+    id: int
+    case_record_id: int
+    version: int
+    status: SummaryStatus
+    content: dict
+    follow_up: str | None
+    discharge_destination: str | None
+    generated_at: datetime
+    generated_by: str
+    signed_at: datetime | None
+    signed_by: str | None

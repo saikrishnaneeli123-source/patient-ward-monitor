@@ -1,6 +1,7 @@
 """Server-rendered pages for ward staff."""
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import Path
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
@@ -15,9 +16,24 @@ from app.db import get_db
 from app.extraction import get_extractor
 from app.routers.api import store_upload
 
+def _format_iso(value: str | None, fmt: str = "%d %b %Y %H:%M") -> str:
+    """Render an ISO timestamp stored in a JSON snapshot."""
+    if not value:
+        return "Not recorded"
+    try:
+        parsed = datetime.fromisoformat(value)
+    except (TypeError, ValueError):
+        return str(value)
+    # A bare date has no useful time component to show.
+    if len(value) == 10:
+        return parsed.strftime("%d %b %Y")
+    return parsed.strftime(fmt)
+
+
 router = APIRouter(tags=["ui"], include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 templates.env.filters["real_allergies"] = services.real_allergies
+templates.env.filters["when"] = _format_iso
 templates.env.globals["can"] = auth.can
 templates.env.globals["PERMS"] = auth.ALL_PERMISSIONS
 # An unknown name in a template would silently resolve to undefined and hide the
@@ -233,6 +249,7 @@ def case_page(
             case=case,
             trend=charts.vitals_trend(observations),
             notes=case.clinical_notes,
+            summary=case.latest_summary,
             trail=services.case_audit_trail(db, case.id, limit=40),
             action_labels=audit.ACTION_LABELS,
             shifts=list(models.Shift),
@@ -358,6 +375,86 @@ def receive_handover_from_ui(
                 f"/cases/{note.case_record_id}?error={exc}#notes", status_code=303
             )
     return RedirectResponse(f"/cases/{note.case_record_id}#notes", status_code=303)
+
+
+@router.get("/cases/{case_id}/summary", response_class=HTMLResponse)
+def summary_page(
+    request: Request,
+    case_id: int,
+    version: int | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+):
+    """The printable discharge summary."""
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    if version is not None:
+        summary = next((s for s in case.discharge_summaries if s.version == version), None)
+    else:
+        summary = case.latest_summary
+    if summary is None:
+        raise HTTPException(404, "No discharge summary has been generated for this case.")
+    return templates.TemplateResponse(
+        request,
+        "summary.html",
+        _context(request, db, user, case=case, summary=summary,
+                 versions=case.discharge_summaries),
+    )
+
+
+@router.post("/cases/{case_id}/summary")
+def generate_summary_from_ui(
+    case_id: int,
+    follow_up: str = Form(default=""),
+    discharge_destination: str = Form(default=""),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+):
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    services.generate_summary(
+        db, case, user, follow_up=follow_up or None,
+        discharge_destination=discharge_destination or None,
+    )
+    return RedirectResponse(f"/cases/{case_id}/summary", status_code=303)
+
+
+@router.post("/discharge-summaries/{summary_id}/edit")
+def edit_summary_from_ui(
+    summary_id: int,
+    follow_up: str = Form(default=""),
+    discharge_destination: str = Form(default=""),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+):
+    summary = services.get_summary(db, summary_id)
+    if summary is None:
+        raise HTTPException(404, "Summary not found.")
+    try:
+        services.update_summary(
+            db, summary, user, follow_up=follow_up, discharge_destination=discharge_destination
+        )
+    except services.SummaryError as exc:
+        return RedirectResponse(f"/cases/{summary.case_record_id}/summary?error={exc}", status_code=303)
+    return RedirectResponse(f"/cases/{summary.case_record_id}/summary", status_code=303)
+
+
+@router.post("/discharge-summaries/{summary_id}/sign")
+def sign_summary_from_ui(
+    summary_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+):
+    summary = services.get_summary(db, summary_id)
+    if summary is None:
+        raise HTTPException(404, "Summary not found.")
+    try:
+        services.sign_summary(db, summary, user)
+    except services.SummaryError as exc:
+        return RedirectResponse(f"/cases/{summary.case_record_id}/summary?error={exc}", status_code=303)
+    return RedirectResponse(f"/cases/{summary.case_record_id}/summary", status_code=303)
 
 
 @router.get("/audit", response_class=HTMLResponse)

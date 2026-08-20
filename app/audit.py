@@ -32,7 +32,7 @@ from typing import Any
 from sqlalchemy import event, inspect, select, text
 from sqlalchemy.orm import Session
 
-from app.models import AuditEvent, Note, User
+from app.models import AuditEvent, DischargeSummary, Note, SummaryStatus, User
 
 logger = logging.getLogger(__name__)
 
@@ -47,6 +47,9 @@ OBSERVATION_RECORDED = "observation.recorded"
 ALERT_ACKNOWLEDGED = "alert.acknowledged"
 UPLOAD_PROCESSED = "upload.processed"
 NOTE_ADDED = "note.added"
+SUMMARY_GENERATED = "summary.generated"
+SUMMARY_UPDATED = "summary.updated"
+SUMMARY_SIGNED = "summary.signed"
 HANDOVER_RECEIVED = "handover.received"
 USER_CREATED = "user.created"
 USER_DEACTIVATED = "user.deactivated"
@@ -62,6 +65,9 @@ ACTION_LABELS = {
     ALERT_ACKNOWLEDGED: "Alert acknowledged",
     UPLOAD_PROCESSED: "Case sheet processed",
     NOTE_ADDED: "Note added",
+    SUMMARY_GENERATED: "Discharge summary generated",
+    SUMMARY_UPDATED: "Discharge summary edited",
+    SUMMARY_SIGNED: "Discharge summary signed",
     HANDOVER_RECEIVED: "Handover received",
     USER_CREATED: "Staff account created",
     USER_DEACTIVATED: "Staff account deactivated",
@@ -222,7 +228,7 @@ def field_changes(before: dict, after: dict) -> dict[str, list]:
 # Append-only enforcement
 # --------------------------------------------------------------------------
 
-APPEND_ONLY_MODELS = (AuditEvent, Note)
+APPEND_ONLY_MODELS = (AuditEvent, Note, DischargeSummary)
 
 # Acknowledging a handover is the one thing that legitimately happens to a note
 # after it is written, so those three columns — and nothing else — may change.
@@ -256,14 +262,46 @@ def _refuse_note_content_change(mapper, connection, target):  # noqa: ARG001
         )
 
 
+def _refuse_signed_summary_change(mapper, connection, target):  # noqa: ARG001
+    """A draft may be edited and regenerated; a signed summary is frozen."""
+    state = inspect(target)
+    was_signed = state.attrs["status"].history.deleted or [target.status]
+    if SummaryStatus.signed in was_signed:
+        raise AuditLogTampered(
+            "A signed discharge summary cannot be changed. Generate a new version instead."
+        )
+    if target.status == SummaryStatus.signed and _changed_columns(target) - SIGNING_COLUMNS:
+        raise AuditLogTampered("Signing a summary must not change its content.")
+
+
+def _refuse_signed_summary_delete(mapper, connection, target):  # noqa: ARG001
+    if target.status == SummaryStatus.signed:
+        raise AuditLogTampered("A signed discharge summary cannot be deleted.")
+
+
+# The only columns that change when a draft is signed.
+SIGNING_COLUMNS = frozenset({"status", "signed_at", "signed_by", "signed_by_id"})
+
+
 def install_guards() -> None:
     """Refuse UPDATE and DELETE on append-only tables at the ORM layer."""
+    update_guards = {
+        AuditEvent: _refuse,
+        Note: _refuse_note_content_change,
+        DischargeSummary: _refuse_signed_summary_change,
+    }
+    delete_guards = {
+        AuditEvent: _refuse,
+        Note: _refuse,
+        DischargeSummary: _refuse_signed_summary_delete,
+    }
     for model in APPEND_ONLY_MODELS:
-        on_update = _refuse if model is AuditEvent else _refuse_note_content_change
+        on_update = update_guards[model]
+        on_delete = delete_guards[model]
         if not event.contains(model, "before_update", on_update):
             event.listen(model, "before_update", on_update)
-        if not event.contains(model, "before_delete", _refuse):
-            event.listen(model, "before_delete", _refuse)
+        if not event.contains(model, "before_delete", on_delete):
+            event.listen(model, "before_delete", on_delete)
 
 
 def install_db_triggers(engine) -> None:
@@ -303,6 +341,14 @@ def install_db_triggers(engine) -> None:
         """CREATE TRIGGER IF NOT EXISTS notes_no_delete
            BEFORE DELETE ON notes
            BEGIN SELECT RAISE(ABORT, 'notes are append-only'); END;""",
+        """CREATE TRIGGER IF NOT EXISTS signed_summary_no_update
+           BEFORE UPDATE ON discharge_summaries
+           WHEN OLD.status = 'signed'
+           BEGIN SELECT RAISE(ABORT, 'a signed discharge summary is append-only'); END;""",
+        """CREATE TRIGGER IF NOT EXISTS signed_summary_no_delete
+           BEFORE DELETE ON discharge_summaries
+           WHEN OLD.status = 'signed'
+           BEGIN SELECT RAISE(ABORT, 'a signed discharge summary is append-only'); END;""",
     ]
     with engine.begin() as connection:
         for statement in statements:

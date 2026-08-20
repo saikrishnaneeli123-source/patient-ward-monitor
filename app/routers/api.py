@@ -20,6 +20,7 @@ from app.schemas import (
     CaseRecordOut,
     CaseRecordUpdate,
     ChainStatusOut,
+    DischargeSummaryOut,
     IntakeResultOut,
     MeOut,
     NoteIn,
@@ -28,6 +29,7 @@ from app.schemas import (
     ObservationOut,
     PatientOut,
     SheetOutcomeOut,
+    SummaryGenerateIn,
     UploadOut,
     UserCreate,
     UserCreated,
@@ -603,3 +605,94 @@ def case_audit_trail(
     if services.get_case(db, case_id) is None:
         raise HTTPException(404, "Case record not found.")
     return services.case_audit_trail(db, case_id)
+
+
+# --------------------------------------------------------------------------
+# Discharge summary
+# --------------------------------------------------------------------------
+
+@router.post("/cases/{case_id}/discharge-summary", response_model=DischargeSummaryOut, status_code=201)
+def generate_discharge_summary(
+    case_id: int,
+    payload: SummaryGenerateIn | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+) -> models.DischargeSummary:
+    """Compile a draft summary from the record.
+
+    The clinical content is copied from the case record, never generated — see
+    ``app.summaries``. Each call produces a new version; earlier ones are kept.
+    """
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    payload = payload or SummaryGenerateIn()
+    return services.generate_summary(
+        db, case, user,
+        follow_up=payload.follow_up,
+        discharge_destination=payload.discharge_destination,
+    )
+
+
+@router.get("/cases/{case_id}/discharge-summary", response_model=DischargeSummaryOut)
+def get_latest_discharge_summary(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> models.DischargeSummary:
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    if case.latest_summary is None:
+        raise HTTPException(404, "No discharge summary has been generated for this case.")
+    return case.latest_summary
+
+
+@router.get("/cases/{case_id}/discharge-summaries", response_model=list[DischargeSummaryOut])
+def list_discharge_summaries(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[models.DischargeSummary]:
+    """Every version, newest first."""
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    return case.discharge_summaries
+
+
+@router.patch("/discharge-summaries/{summary_id}", response_model=DischargeSummaryOut)
+def update_discharge_summary(
+    summary_id: int,
+    payload: SummaryGenerateIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+) -> models.DischargeSummary:
+    """Edit the follow-up plan or destination on a draft."""
+    summary = services.get_summary(db, summary_id)
+    if summary is None:
+        raise HTTPException(404, "Summary not found.")
+    try:
+        return services.update_summary(
+            db, summary, user,
+            follow_up=payload.follow_up,
+            discharge_destination=payload.discharge_destination,
+        )
+    except services.SummaryError as exc:
+        raise HTTPException(409, str(exc)) from exc
+
+
+@router.post("/discharge-summaries/{summary_id}/sign", response_model=DischargeSummaryOut)
+def sign_discharge_summary(
+    summary_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.DISCHARGE)),
+) -> models.DischargeSummary:
+    """Sign a draft off. The document is frozen from this point."""
+    summary = services.get_summary(db, summary_id)
+    if summary is None:
+        raise HTTPException(404, "Summary not found.")
+    try:
+        return services.sign_summary(db, summary, user)
+    except services.SummaryError as exc:
+        raise HTTPException(409, str(exc)) from exc

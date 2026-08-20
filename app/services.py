@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app import audit, models
+from app import audit, models, summaries
 from app.schemas import BoardRow
 
 RISK_ORDER = {"high": 0, "medium": 1, "low-medium": 2, "low": 3, None: 4}
@@ -273,3 +273,123 @@ def audit_trail(
     if actor_id:
         stmt = stmt.where(models.AuditEvent.actor_id == actor_id)
     return list(db.execute(stmt).scalars().all())
+
+
+# --------------------------------------------------------------------------
+# Discharge summaries
+# --------------------------------------------------------------------------
+
+class SummaryError(RuntimeError):
+    """Raised when a summary cannot be generated or signed as asked."""
+
+
+def generate_summary(
+    db: Session,
+    case: models.CaseRecord,
+    user: models.User,
+    *,
+    follow_up: str | None = None,
+    discharge_destination: str | None = None,
+) -> models.DischargeSummary:
+    """Compile a new draft summary from the record as it stands.
+
+    Each generation is a new version; earlier ones — signed or not — are kept,
+    so it is always possible to see what a summary said at the time.
+    """
+    # Query for the previous version rather than reading case.discharge_summaries:
+    # that relationship may already be loaded and would not see a summary added
+    # earlier in this same session, so versions would collide at 1.
+    previous = db.execute(
+        select(models.DischargeSummary)
+        .where(models.DischargeSummary.case_record_id == case.id)
+        .order_by(models.DischargeSummary.version.desc())
+        .limit(1)
+    ).scalar_one_or_none()
+
+    summary = models.DischargeSummary(
+        case_record_id=case.id,
+        version=(previous.version + 1) if previous else 1,
+        status=models.SummaryStatus.draft,
+        content=summaries.compile_summary(case),
+        # Carry the clinician's own text forward rather than making them retype it.
+        follow_up=follow_up if follow_up is not None else (previous.follow_up if previous else None),
+        discharge_destination=(
+            discharge_destination if discharge_destination is not None
+            else (previous.discharge_destination if previous else None)
+        ),
+        generated_by=user.full_name,
+        generated_by_id=user.id,
+    )
+    db.add(summary)
+    db.flush()
+    audit.record(
+        db,
+        actor=user,
+        action=audit.SUMMARY_GENERATED,
+        entity_type="case",
+        entity_id=case.id,
+        summary=f"Discharge summary v{summary.version} generated for {case.patient.full_name}.",
+        details={
+            "summary_id": summary.id,
+            "version": summary.version,
+            "observations_included": summary.content["course"]["recorded"],
+            "record_verified": case.verification == models.VerificationStatus.verified,
+        },
+    )
+    db.commit()
+    return summary
+
+
+def update_summary(
+    db: Session,
+    summary: models.DischargeSummary,
+    user: models.User,
+    *,
+    follow_up: str | None = None,
+    discharge_destination: str | None = None,
+) -> models.DischargeSummary:
+    """Edit the clinician-written sections of a draft."""
+    if summary.is_signed:
+        raise SummaryError("A signed summary cannot be edited. Generate a new version instead.")
+    if follow_up is not None:
+        summary.follow_up = follow_up or None
+    if discharge_destination is not None:
+        summary.discharge_destination = discharge_destination or None
+    audit.record(
+        db,
+        actor=user,
+        action=audit.SUMMARY_UPDATED,
+        entity_type="case",
+        entity_id=summary.case_record_id,
+        summary=f"Discharge summary v{summary.version} edited.",
+        details={"summary_id": summary.id},
+    )
+    db.commit()
+    return summary
+
+
+def sign_summary(
+    db: Session, summary: models.DischargeSummary, user: models.User
+) -> models.DischargeSummary:
+    """Sign a draft off. After this the document is frozen."""
+    if summary.is_signed:
+        raise SummaryError(f"Already signed by {summary.signed_by}.")
+    summary.status = models.SummaryStatus.signed
+    summary.signed_by = user.full_name
+    summary.signed_by_id = user.id
+    summary.signed_at = datetime.now(timezone.utc)
+    audit.record(
+        db,
+        actor=user,
+        action=audit.SUMMARY_SIGNED,
+        entity_type="case",
+        entity_id=summary.case_record_id,
+        summary=f"Discharge summary v{summary.version} signed by {user.full_name}.",
+        details={"summary_id": summary.id, "version": summary.version},
+    )
+    db.commit()
+    return summary
+
+
+def get_summary(db: Session, summary_id: int) -> models.DischargeSummary | None:
+    return db.get(models.DischargeSummary, summary_id)
