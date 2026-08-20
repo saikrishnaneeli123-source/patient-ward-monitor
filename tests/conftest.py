@@ -15,7 +15,7 @@ os.environ["WARD_UPLOAD_DIR"] = str(_TMP / "uploads")
 os.environ.pop("ANTHROPIC_API_KEY", None)
 os.environ["WARD_SECRET_KEY"] = "test-secret-key-not-used-in-production"
 
-from app import auth, extraction  # noqa: E402
+from app import audit, auth, extraction  # noqa: E402
 from app.db import Base, SessionLocal, engine  # noqa: E402
 from app.extraction import CaseSheetBatch  # noqa: E402
 from app.main import app as fastapi_app  # noqa: E402
@@ -46,6 +46,10 @@ class FakeExtractor:
 def clean_db():
     Base.metadata.drop_all(bind=engine)
     Base.metadata.create_all(bind=engine)
+    # Tests build the schema directly rather than through init_db, so install the
+    # append-only guards here too — otherwise they would go untested.
+    audit.install_guards()
+    audit.install_db_triggers(engine)
     auth._failures.clear()
     session = SessionLocal()
     try:
@@ -140,3 +144,16 @@ def png_bytes() -> bytes:
     buffer = io.BytesIO()
     Image.new("RGB", (40, 40), "white").save(buffer, format="PNG")
     return buffer.getvalue()
+
+
+@pytest.fixture
+def a_case_id(client, png_bytes, fake_extractor):
+    """A case record created through the API, for tests that need one."""
+    from app.extraction import CaseSheetBatch, ExtractedCaseSheet
+
+    fake_extractor(CaseSheetBatch(sheets=[
+        ExtractedCaseSheet(full_name="Asha Rao", mrn="A-1", ward_name="Medical A",
+                           bed_label="4", confidence=0.9)
+    ]))
+    client.post("/api/uploads", files=[("files", ("s.png", png_bytes, "image/png"))])
+    return client.get("/api/cases").json()[0]["id"]

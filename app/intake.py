@@ -16,7 +16,7 @@ from datetime import date, datetime, timezone
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from app import models
+from app import audit, models
 from app.extraction import (
     CaseSheetBatch,
     ExtractedCaseSheet,
@@ -448,7 +448,9 @@ def apply_batch(db: Session, batch: CaseSheetBatch, upload: models.Upload | None
     return [apply_sheet(db, sheet, upload) for sheet in batch.sheets]
 
 
-def process_upload(db: Session, upload: models.Upload, data: bytes) -> IntakeResult:
+def process_upload(
+    db: Session, upload: models.Upload, data: bytes, actor: models.User | None = None
+) -> IntakeResult:
     """Run extraction for a stored upload and materialise the case records."""
     result = IntakeResult(upload=upload)
     upload.status = models.UploadStatus.processing
@@ -475,5 +477,57 @@ def process_upload(db: Session, upload: models.Upload, data: bytes) -> IntakeRes
     upload.status = models.UploadStatus.completed
     upload.error = None
     upload.processed_at = datetime.now(timezone.utc)
+
+    if actor is not None:
+        audit.record(
+            db,
+            actor=actor,
+            action=audit.UPLOAD_PROCESSED,
+            entity_type="upload",
+            entity_id=upload.id,
+            summary=(
+                f"'{upload.original_filename}': {len(batch.sheets)} sheet(s) detected, "
+                f"{result.created} record(s) created, {result.updated} updated."
+            ),
+            details={
+                "sheets": [
+                    {
+                        "action": o.action,
+                        "case_record_id": o.case_record.id if o.case_record else None,
+                        "case_number": o.case_record.case_number if o.case_record else None,
+                        "patient": o.sheet.full_name,
+                        "pages": o.sheet.page_range,
+                        "confidence": o.sheet.confidence,
+                        "warnings": o.warnings,
+                        "reason": o.reason,
+                    }
+                    for o in result.outcomes
+                ],
+                "document_notes": batch.document_notes,
+            },
+        )
+        # One audit entry per created record, so a case's own trail starts at
+        # its creation rather than only inside the upload's entry.
+        for outcome in result.outcomes:
+            if outcome.case_record is None:
+                continue
+            audit.record(
+                db,
+                actor=actor,
+                action=audit.CASE_CREATED if outcome.action == "created" else audit.CASE_UPDATED,
+                entity_type="case",
+                entity_id=outcome.case_record.id,
+                summary=(
+                    f"{outcome.case_record.case_number} {outcome.action} from "
+                    f"'{upload.original_filename}' page(s) {outcome.sheet.page_range or '?'}."
+                ),
+                details={
+                    "source": "case sheet extraction",
+                    "upload_id": upload.id,
+                    "confidence": outcome.sheet.confidence,
+                    "warnings": outcome.warnings,
+                },
+            )
+
     db.commit()
     return result

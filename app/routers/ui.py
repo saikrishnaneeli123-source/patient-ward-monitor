@@ -6,10 +6,11 @@ from pathlib import Path
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
+from jinja2 import StrictUndefined
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app import auth, charts, intake, models, services
+from app import audit, auth, charts, intake, models, services
 from app.db import get_db
 from app.extraction import get_extractor
 from app.routers.api import store_upload
@@ -18,11 +19,10 @@ router = APIRouter(tags=["ui"], include_in_schema=False)
 templates = Jinja2Templates(directory=str(Path(__file__).resolve().parent.parent / "templates"))
 templates.env.filters["real_allergies"] = services.real_allergies
 templates.env.globals["can"] = auth.can
-templates.env.globals["PERMS"] = {
-    name: getattr(auth, name)
-    for name in ("VIEW", "UPLOAD", "RECORD_OBSERVATIONS", "VERIFY_CASE",
-                 "EDIT_CASE", "DISCHARGE", "ACKNOWLEDGE_ALERT", "MANAGE_USERS")
-}
+templates.env.globals["PERMS"] = auth.ALL_PERMISSIONS
+# An unknown name in a template would silently resolve to undefined and hide the
+# control it guards, so make it an error instead.
+templates.env.undefined = StrictUndefined
 
 
 def _context(request: Request, db: Session, user: models.User | None = None, **extra) -> dict:
@@ -196,7 +196,7 @@ async def upload_submit(
         if not data:
             continue
         upload = store_upload(db, file, data, user)
-        results.append(intake.process_upload(db, upload, data))
+        results.append(intake.process_upload(db, upload, data, actor=user))
     recent = db.execute(select(models.Upload).order_by(models.Upload.id.desc()).limit(15)).scalars().all()
     return templates.TemplateResponse(
         request, "upload.html", _context(request, db, user, uploads=recent, results=results)
@@ -228,7 +228,15 @@ def case_page(
     return templates.TemplateResponse(
         request,
         "case.html",
-        _context(request, db, user, case=case, trend=charts.vitals_trend(observations)),
+        _context(
+            request, db, user,
+            case=case,
+            trend=charts.vitals_trend(observations),
+            notes=case.clinical_notes,
+            trail=services.case_audit_trail(db, case.id, limit=40),
+            action_labels=audit.ACTION_LABELS,
+            shifts=list(models.Shift),
+        ),
     )
 
 
@@ -294,6 +302,82 @@ def add_observation_from_ui(
     intake.raise_alerts(db, observation)
     db.commit()
     return RedirectResponse(f"/cases/{case_id}", status_code=303)
+
+
+@router.post("/cases/{case_id}/notes")
+def add_note_from_ui(
+    case_id: int,
+    kind: str = Form(default="progress"),
+    shift: str = Form(default=""),
+    body: str = Form(default=""),
+    situation: str = Form(default=""),
+    background: str = Form(default=""),
+    assessment: str = Form(default=""),
+    recommendation: str = Form(default=""),
+    outstanding: str = Form(default=""),
+    supersedes_id: str = Form(default=""),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.WRITE_NOTE)),
+):
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    if not any(f.strip() for f in (body, situation, background, assessment, recommendation)):
+        return RedirectResponse(f"/cases/{case_id}?error=A+note+needs+some+content.", status_code=303)
+
+    services.add_note(
+        db, case, user,
+        kind=models.NoteKind(kind),
+        shift=models.Shift(shift) if shift else None,
+        body=body,
+        situation=situation,
+        background=background,
+        assessment=assessment,
+        recommendation=recommendation,
+        # One outstanding task per line, the way a nurse would write it.
+        outstanding=[line.strip() for line in outstanding.splitlines() if line.strip()],
+        supersedes_id=int(supersedes_id) if supersedes_id.strip() else None,
+    )
+    return RedirectResponse(f"/cases/{case_id}#notes", status_code=303)
+
+
+@router.post("/notes/{note_id}/receive")
+def receive_handover_from_ui(
+    note_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.RECEIVE_HANDOVER)),
+):
+    note = db.get(models.Note, note_id)
+    if note is None:
+        raise HTTPException(404, "Note not found.")
+    if note.kind == models.NoteKind.handover and note.received_at is None:
+        try:
+            services.receive_handover(db, note, user)
+        except services.HandoverError as exc:
+            return RedirectResponse(
+                f"/cases/{note.case_record_id}?error={exc}#notes", status_code=303
+            )
+    return RedirectResponse(f"/cases/{note.case_record_id}#notes", status_code=303)
+
+
+@router.get("/audit", response_class=HTMLResponse)
+def audit_page(
+    request: Request,
+    action: str | None = None,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW_AUDIT)),
+):
+    return templates.TemplateResponse(
+        request,
+        "audit.html",
+        _context(
+            request, db, user,
+            events=services.audit_trail(db, action=action, limit=200),
+            status=audit.verify_chain(db),
+            action_labels=audit.ACTION_LABELS,
+            active_action=action,
+        ),
+    )
 
 
 @router.post("/alerts/{alert_id}/acknowledge")

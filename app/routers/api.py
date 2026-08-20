@@ -8,18 +8,22 @@ from fastapi import APIRouter, Depends, File, HTTPException, Query, UploadFile
 from sqlalchemy import or_, select
 from sqlalchemy.orm import Session
 
-from app import auth, intake, models, services
+from app import audit, auth, intake, models, services
 from app.config import get_settings
 from app.db import get_db
 from app.extraction import ExtractedCaseSheet, detect_content_type, page_count
 from app.schemas import (
     AlertOut,
+    AuditEventOut,
     BoardRow,
     CaseRecordCreate,
     CaseRecordOut,
     CaseRecordUpdate,
+    ChainStatusOut,
     IntakeResultOut,
     MeOut,
+    NoteIn,
+    NoteOut,
     ObservationIn,
     ObservationOut,
     PatientOut,
@@ -118,7 +122,7 @@ async def upload_case_sheets(
         if not data:
             raise HTTPException(400, f"'{file.filename}' is empty.")
         upload = store_upload(db, file, data, user)
-        results.append(_result_out(intake.process_upload(db, upload, data)))
+        results.append(_result_out(intake.process_upload(db, upload, data, actor=user)))
     return results
 
 
@@ -135,7 +139,7 @@ def reprocess_upload(
     path = Path(upload.stored_path)
     if not path.exists():
         raise HTTPException(410, "The stored scan is no longer on disk.")
-    return _result_out(intake.process_upload(db, upload, path.read_bytes()))
+    return _result_out(intake.process_upload(db, upload, path.read_bytes(), actor=user))
 
 
 @router.get("/uploads", response_model=list[UploadOut])
@@ -240,6 +244,15 @@ def create_case(
     case.extraction_confidence = None
     case.extraction_warnings = []
     case.extraction_payload = None
+    audit.record(
+        db,
+        actor=user,
+        action=audit.CASE_CREATED,
+        entity_type="case",
+        entity_id=case.id,
+        summary=f"{case.case_number} created by hand for {case.patient.full_name}.",
+        details={"source": "manual entry"},
+    )
     db.commit()
     return case
 
@@ -266,10 +279,33 @@ def update_case(
     case = services.get_case(db, case_id)
     if case is None:
         raise HTTPException(404, "Case record not found.")
-    for field, value in payload.model_dump(exclude_unset=True).items():
+
+    updates = payload.model_dump(exclude_unset=True)
+    before = {field: getattr(case, field) for field in updates}
+    for field, value in updates.items():
         setattr(case, field, value)
-    if case.status == models.CaseStatus.discharged and case.discharge_date is None:
+
+    discharged = case.status == models.CaseStatus.discharged
+    if discharged and case.discharge_date is None:
         case.discharge_date = datetime.now(timezone.utc).date()
+
+    changes = audit.field_changes(before, updates)
+    if changes:
+        audit.record(
+            db,
+            actor=user,
+            action=audit.CASE_DISCHARGED if discharged and "status" in changes else audit.CASE_UPDATED,
+            entity_type="case",
+            entity_id=case.id,
+            summary=(
+                f"{case.case_number}: {', '.join(changes)} changed."
+                if not (discharged and "status" in changes)
+                else f"{case.case_number}: {case.patient.full_name} discharged."
+            ),
+            # The old and new value of every changed field, so an edit is
+            # reconstructable from the log even though records are not versioned.
+            details={"changes": changes},
+        )
     db.commit()
     return case
 
@@ -316,7 +352,24 @@ def add_observation(
     intake.score_observation(observation)
     db.add(observation)
     db.flush()
-    intake.raise_alerts(db, observation)
+    raised = intake.raise_alerts(db, observation)
+    audit.record(
+        db,
+        actor=user,
+        action=audit.OBSERVATION_RECORDED,
+        entity_type="case",
+        entity_id=case.id,
+        summary=(
+            f"Observations recorded — NEWS2 {observation.news2_score} "
+            f"({observation.risk_level} risk)."
+        ),
+        details={
+            "observation_id": observation.id,
+            "news2": observation.news2_score,
+            "risk": observation.risk_level,
+            "alerts_raised": len(raised),
+        },
+    )
     db.commit()
     return observation
 
@@ -408,6 +461,16 @@ def create_staff_user(
         )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    audit.record(
+        db,
+        actor=user,
+        action=audit.USER_CREATED,
+        entity_type="user",
+        entity_id=created.id,
+        summary=f"Created {created.username} with role {created.role.value}.",
+        details={"api_token_issued": bool(token)},
+    )
+    db.commit()
     return UserCreated(user=UserOut.model_validate(created), api_token=token)
 
 
@@ -424,5 +487,119 @@ def deactivate_user(
     if target.id == user.id:
         raise HTTPException(400, "You cannot deactivate your own account.")
     target.is_active = False
+    audit.record(
+        db,
+        actor=user,
+        action=audit.USER_DEACTIVATED,
+        entity_type="user",
+        entity_id=target.id,
+        summary=f"Deactivated {target.username}; sessions and API token revoked.",
+        details={"role": target.role.value},
+    )
     db.commit()
     return target
+
+
+# --------------------------------------------------------------------------
+# Clinical notes and shift handover
+# --------------------------------------------------------------------------
+
+@router.get("/cases/{case_id}/notes", response_model=list[NoteOut])
+def list_notes(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[models.Note]:
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+    return case.clinical_notes
+
+
+@router.post("/cases/{case_id}/notes", response_model=NoteOut, status_code=201)
+def add_note(
+    case_id: int,
+    payload: NoteIn,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.WRITE_NOTE)),
+) -> models.Note:
+    """Append a note. Notes are never edited — send a `correction` that
+    supersedes the original instead."""
+    case = services.get_case(db, case_id)
+    if case is None:
+        raise HTTPException(404, "Case record not found.")
+
+    fields = payload.model_dump()
+    if not any(fields[k] for k in ("body", "situation", "background", "assessment", "recommendation")):
+        raise HTTPException(400, "A note needs some content.")
+    if payload.supersedes_id is not None:
+        original = db.get(models.Note, payload.supersedes_id)
+        if original is None or original.case_record_id != case_id:
+            raise HTTPException(400, "The note being corrected does not belong to this case.")
+
+    return services.add_note(db, case, user, **fields)
+
+
+@router.post("/notes/{note_id}/receive", response_model=NoteOut)
+def receive_handover(
+    note_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.RECEIVE_HANDOVER)),
+) -> models.Note:
+    """Record that the incoming staff member has taken this handover."""
+    note = db.get(models.Note, note_id)
+    if note is None:
+        raise HTTPException(404, "Note not found.")
+    if note.kind != models.NoteKind.handover:
+        raise HTTPException(400, "Only handover notes are received.")
+    if note.received_at is not None:
+        raise HTTPException(409, f"Already received by {note.received_by}.")
+    try:
+        return services.receive_handover(db, note, user)
+    except services.HandoverError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+
+@router.get("/handovers/outstanding", response_model=list[NoteOut])
+def outstanding_handovers(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[models.Note]:
+    """Handovers nobody has taken yet."""
+    return services.outstanding_handovers(db)
+
+
+# --------------------------------------------------------------------------
+# Audit log
+# --------------------------------------------------------------------------
+
+@router.get("/audit", response_model=list[AuditEventOut])
+def read_audit_log(
+    action: str | None = None,
+    actor_id: int | None = None,
+    limit: int = Query(100, le=500),
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW_AUDIT)),
+) -> list[models.AuditEvent]:
+    return services.audit_trail(db, action=action, actor_id=actor_id, limit=limit)
+
+
+@router.get("/audit/verify", response_model=ChainStatusOut)
+def verify_audit_log(
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW_AUDIT)),
+) -> ChainStatusOut:
+    """Walk the hash chain and report the first entry that does not verify."""
+    return ChainStatusOut(**audit.verify_chain(db).as_dict())
+
+
+@router.get("/cases/{case_id}/audit", response_model=list[AuditEventOut])
+def case_audit_trail(
+    case_id: int,
+    db: Session = Depends(get_db),
+    user: models.User = Depends(auth.require(auth.VIEW)),
+) -> list[models.AuditEvent]:
+    """Everything that has happened to one case record."""
+    if services.get_case(db, case_id) is None:
+        raise HTTPException(404, "Case record not found.")
+    return services.case_audit_trail(db, case_id)

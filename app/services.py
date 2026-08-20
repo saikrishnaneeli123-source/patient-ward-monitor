@@ -6,7 +6,7 @@ from datetime import datetime, timezone
 from sqlalchemy import select
 from sqlalchemy.orm import Session, selectinload
 
-from app import models
+from app import audit, models
 from app.schemas import BoardRow
 
 RISK_ORDER = {"high": 0, "medium": 1, "low-medium": 2, "low": 3, None: 4}
@@ -99,6 +99,19 @@ def verify_case(db: Session, case: models.CaseRecord, user: models.User) -> mode
     case.verified_by = user.full_name
     case.verified_by_id = user.id
     case.verified_at = datetime.now(timezone.utc)
+    audit.record(
+        db,
+        actor=user,
+        action=audit.CASE_VERIFIED,
+        entity_type="case",
+        entity_id=case.id,
+        summary=f"{case.case_number} verified against the original scan.",
+        details={
+            "patient": case.patient.full_name,
+            "confidence": case.extraction_confidence,
+            "warnings": case.extraction_warnings,
+        },
+    )
     db.commit()
     return case
 
@@ -107,6 +120,15 @@ def acknowledge(db: Session, alert: models.Alert, user: models.User) -> models.A
     alert.acknowledged_at = datetime.now(timezone.utc)
     alert.acknowledged_by = user.full_name
     alert.acknowledged_by_id = user.id
+    audit.record(
+        db,
+        actor=user,
+        action=audit.ALERT_ACKNOWLEDGED,
+        entity_type="case",
+        entity_id=alert.case_record_id,
+        summary=f"Alert acknowledged: {alert.message}",
+        details={"alert_id": alert.id, "severity": alert.severity},
+    )
     db.commit()
     return alert
 
@@ -130,3 +152,124 @@ def real_allergies(allergies: list | None) -> list[str]:
         if normalised and normalised not in _NO_ALLERGY_TOKENS:
             kept.append(text)
     return kept
+
+
+# --------------------------------------------------------------------------
+# Clinical notes and shift handover
+# --------------------------------------------------------------------------
+
+def add_note(
+    db: Session,
+    case: models.CaseRecord,
+    user: models.User,
+    *,
+    kind: models.NoteKind = models.NoteKind.progress,
+    shift: models.Shift | None = None,
+    body: str | None = None,
+    situation: str | None = None,
+    background: str | None = None,
+    assessment: str | None = None,
+    recommendation: str | None = None,
+    outstanding: list[str] | None = None,
+    supersedes_id: int | None = None,
+) -> models.Note:
+    """Append a note and record it in the audit log, in one transaction."""
+    note = models.Note(
+        case_record_id=case.id,
+        kind=kind,
+        shift=shift,
+        body=body or None,
+        situation=situation or None,
+        background=background or None,
+        assessment=assessment or None,
+        recommendation=recommendation or None,
+        outstanding=[item for item in (outstanding or []) if item.strip()],
+        author_id=user.id,
+        author_name=user.full_name,
+        author_role=user.role.value,
+        supersedes_id=supersedes_id,
+    )
+    db.add(note)
+    db.flush()
+    audit.record(
+        db,
+        actor=user,
+        action=audit.NOTE_ADDED,
+        entity_type="case",
+        entity_id=case.id,
+        summary=f"{kind.value.title()} note added for {case.patient.full_name}.",
+        details={
+            "note_id": note.id,
+            "kind": kind.value,
+            "shift": shift.value if shift else None,
+            "supersedes_id": supersedes_id,
+            "outstanding": note.outstanding,
+        },
+    )
+    db.commit()
+    return note
+
+
+class HandoverError(RuntimeError):
+    """Raised when a handover cannot be received as asked."""
+
+
+def receive_handover(db: Session, note: models.Note, user: models.User) -> models.Note:
+    """Record that the incoming staff member took the handover.
+
+    The author cannot receive their own handover: the point of the receipt is
+    that care passed to someone else, and a self-receipt would record a transfer
+    that never happened.
+    """
+    if note.author_id is not None and note.author_id == user.id:
+        raise HandoverError(
+            "A handover is received by the incoming staff member, not by the person who wrote it."
+        )
+    note.received_by = user.full_name
+    note.received_by_id = user.id
+    note.received_at = datetime.now(timezone.utc)
+    audit.record(
+        db,
+        actor=user,
+        action=audit.HANDOVER_RECEIVED,
+        entity_type="case",
+        entity_id=note.case_record_id,
+        summary=f"Handover from {note.author_name} received by {user.full_name}.",
+        details={"note_id": note.id, "handed_over_by": note.author_name},
+    )
+    db.commit()
+    return note
+
+
+def outstanding_handovers(db: Session, limit: int = 50) -> list[models.Note]:
+    """Handover notes nobody has taken yet — the thing that gets lost at shift change."""
+    stmt = (
+        select(models.Note)
+        .where(models.Note.kind == models.NoteKind.handover)
+        .where(models.Note.received_at.is_(None))
+        .order_by(models.Note.created_at.desc())
+        .limit(limit)
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def case_audit_trail(db: Session, case_id: int, limit: int = 100) -> list[models.AuditEvent]:
+    stmt = (
+        select(models.AuditEvent)
+        .where(models.AuditEvent.entity_type == "case")
+        .where(models.AuditEvent.entity_id == case_id)
+        .order_by(models.AuditEvent.id.desc())
+        .limit(limit)
+    )
+    return list(db.execute(stmt).scalars().all())
+
+
+def audit_trail(
+    db: Session, *, action: str | None = None, actor_id: int | None = None, limit: int = 100
+) -> list[models.AuditEvent]:
+    stmt = select(models.AuditEvent).order_by(models.AuditEvent.id.desc()).limit(limit)
+    if action:
+        stmt = stmt.where(models.AuditEvent.action == action)
+    if actor_id:
+        stmt = stmt.where(models.AuditEvent.actor_id == actor_id)
+    return list(db.execute(stmt).scalars().all())

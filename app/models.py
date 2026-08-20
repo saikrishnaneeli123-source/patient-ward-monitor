@@ -65,6 +65,21 @@ class UploadStatus(str, enum.Enum):
     failed = "failed"
 
 
+class NoteKind(str, enum.Enum):
+    """Clinical notes are append-only; a correction is a new note that supersedes."""
+
+    progress = "progress"
+    handover = "handover"
+    escalation = "escalation"
+    correction = "correction"
+
+
+class Shift(str, enum.Enum):
+    early = "early"
+    late = "late"
+    night = "night"
+
+
 class Consciousness(str, enum.Enum):
     """ACVPU scale."""
 
@@ -206,6 +221,12 @@ class CaseRecord(Base):
     alerts: Mapped[list["Alert"]] = relationship(
         back_populates="case_record", cascade="all, delete-orphan", order_by="Alert.created_at.desc()"
     )
+    # Named `clinical_notes`, not `notes`: `notes` is already the free-text field
+    # transcribed off the case sheet, and a relationship of the same name would
+    # silently shadow it.
+    clinical_notes: Mapped[list["Note"]] = relationship(
+        back_populates="case_record", cascade="all, delete-orphan", order_by="Note.created_at.desc()"
+    )
 
     @property
     def latest_observation(self) -> "Observation | None":
@@ -293,3 +314,90 @@ class Alert(Base):
     )
 
     case_record: Mapped[CaseRecord] = relationship(back_populates="alerts")
+
+
+class Note(Base):
+    """A clinical or shift-handover note against a case.
+
+    Notes are append-only, the way a paper chart is: an entry is never edited or
+    deleted. A correction is a new note of kind ``correction`` pointing at the
+    one it supersedes, so the original and the correction both stay readable.
+
+    Handover notes carry SBAR fields (Situation, Background, Assessment,
+    Recommendation) and are *received* by the incoming staff member, which is
+    recorded — an unreceived handover is the thing that goes wrong at shift change.
+    """
+
+    __tablename__ = "notes"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    case_record_id: Mapped[int] = mapped_column(
+        ForeignKey("case_records.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[NoteKind] = mapped_column(Enum(NoteKind), default=NoteKind.progress)
+    shift: Mapped[Shift | None] = mapped_column(Enum(Shift), default=None)
+
+    body: Mapped[str | None] = mapped_column(Text, default=None)
+    # SBAR — used by handover notes, left null on a plain progress note.
+    situation: Mapped[str | None] = mapped_column(Text, default=None)
+    background: Mapped[str | None] = mapped_column(Text, default=None)
+    assessment: Mapped[str | None] = mapped_column(Text, default=None)
+    recommendation: Mapped[str | None] = mapped_column(Text, default=None)
+    outstanding: Mapped[list] = mapped_column(JSON, default=list)
+
+    author_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), default=None)
+    author_name: Mapped[str] = mapped_column(String(160))
+    author_role: Mapped[str] = mapped_column(String(20))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    # Handover receipt.
+    received_by_id: Mapped[int | None] = mapped_column(
+        ForeignKey("users.id", ondelete="SET NULL"), default=None
+    )
+    received_by: Mapped[str | None] = mapped_column(String(160), default=None)
+    received_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), default=None)
+
+    supersedes_id: Mapped[int | None] = mapped_column(
+        ForeignKey("notes.id", ondelete="SET NULL"), default=None
+    )
+
+    case_record: Mapped[CaseRecord] = relationship(back_populates="clinical_notes")
+    supersedes: Mapped["Note | None"] = relationship(remote_side="Note.id")
+
+    @property
+    def is_sbar(self) -> bool:
+        return any((self.situation, self.background, self.assessment, self.recommendation))
+
+    @property
+    def awaiting_receipt(self) -> bool:
+        return self.kind == NoteKind.handover and self.received_at is None
+
+
+class AuditEvent(Base):
+    """One tamper-evident entry in the audit log.
+
+    Each row carries the hash of the row before it, so the log forms a chain:
+    changing or removing any entry breaks every hash after it, and
+    ``audit.verify_chain`` reports exactly where. Rows cannot be updated or
+    deleted — the ORM refuses and, on SQLite, database triggers refuse too.
+    """
+
+    __tablename__ = "audit_events"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+    # The actor's name and role are copied in, so the log still reads correctly
+    # after an account is renamed or deleted.
+    actor_id: Mapped[int | None] = mapped_column(ForeignKey("users.id", ondelete="SET NULL"), default=None)
+    actor_name: Mapped[str] = mapped_column(String(160))
+    actor_role: Mapped[str] = mapped_column(String(20))
+
+    action: Mapped[str] = mapped_column(String(60), index=True)
+    entity_type: Mapped[str] = mapped_column(String(40), index=True)
+    entity_id: Mapped[int | None] = mapped_column(Integer, default=None, index=True)
+    summary: Mapped[str] = mapped_column(Text)
+    details: Mapped[dict] = mapped_column(JSON, default=dict)
+
+    prev_hash: Mapped[str] = mapped_column(String(64))
+    entry_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)

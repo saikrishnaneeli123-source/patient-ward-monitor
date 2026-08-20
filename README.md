@@ -12,6 +12,8 @@ updates their record instead of duplicating them.
 
 ![Vitals trend](docs/trend.png)
 
+![Shift handover](docs/handover.png)
+
 ---
 
 ## Quick start
@@ -98,13 +100,13 @@ Every page and endpoint requires a signed-in user. Browsers use a signed session
 cookie; devices and integrations send `Authorization: Bearer <token>`, where only
 a SHA-256 of the token is stored.
 
-| | view | upload | record obs | verify | edit | discharge | ack alerts | manage users |
-|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
-| **admin** | ● | ● | ● | ● | ● | ● | ● | ● |
-| **doctor** | ● | ● | ● | ● | ● | ● | ● | |
-| **nurse** | ● | ● | ● | ● | | | ● | |
-| **clerk** | ● | ● | | | | | | |
-| **readonly** | ● | | | | | | | |
+| | view | upload | obs | verify | notes | edit | discharge | audit | users |
+|---|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|:-:|
+| **admin** | ● | ● | ● | ● | ● | ● | ● | ● | ● |
+| **doctor** | ● | ● | ● | ● | ● | ● | ● | | |
+| **nurse** | ● | ● | ● | ● | ● | | | | |
+| **clerk** | ● | ● | | | | | | | |
+| **readonly** | ● | | | | | | | | |
 
 Nurses may confirm a transcription against the sheet, because that is a
 transcription check rather than a clinical decision; changing a diagnosis or
@@ -117,11 +119,68 @@ Two rules make the audit trail mean something:
   rejects a `recorded_by` field outright — an observation cannot be filed under
   a colleague's name.
 - **The UI hides what your role cannot do**, so nobody is offered a button that
-  would only 403.
+  would only 403. The permission map the templates read is derived from the role
+  matrix rather than hand-kept, and templates run with `StrictUndefined` — a
+  typo'd permission name is an error instead of a silently hidden control.
 
 Passwords are hashed with scrypt at the RFC 7914 interactive parameters
 (n=2¹⁴, ~160 ms per attempt). Five failed attempts lock an account for five
 minutes. Deactivating a user revokes their sessions and API token immediately.
+
+---
+
+## Notes and shift handover
+
+Each case carries clinical notes. A **handover** note uses SBAR — Situation,
+Background, Assessment, Recommendation — plus a list of tasks the next shift
+picks up.
+
+**Notes are append-only, like a paper chart.** Nothing is edited or deleted; a
+correction is a new note that supersedes the original, and both stay readable.
+The ORM refuses to update or delete a note, and on SQLite a database trigger
+refuses too — so even raw SQL cannot quietly rewrite what a nurse wrote.
+
+**A handover has to be received.** The incoming staff member takes it, and who
+took it and when is recorded. The author cannot receive their own handover: the
+receipt exists to record that care passed to someone else. Handovers nobody has
+taken are flagged on the case and listed at `/api/handovers/outstanding` — an
+unreceived handover is the classic shift-change failure.
+
+---
+
+## The audit log
+
+Every meaningful action is logged: records created, edited (with the old and new
+value of each changed field), verified, discharged; observations recorded; alerts
+acknowledged; notes written and handovers received; accounts created and
+deactivated; sign-ins and failed sign-ins.
+
+**The log is append-only and hash-chained.** Each entry stores the hash of the
+entry before it, so altering or deleting any entry breaks every hash after it.
+`/audit` shows the chain status, and `GET /api/audit/verify` reports the first
+entry that fails and why:
+
+```json
+{"entries": 412, "intact": false, "broken_at_id": 118,
+ "reason": "Entry contents do not match its hash — this entry was altered."}
+```
+
+Three layers, and it is worth being precise about what each one buys:
+
+| Layer | Stops |
+|---|---|
+| ORM guards | the application updating or deleting an entry |
+| SQLite triggers | raw SQL doing it behind the application's back |
+| Hash chain | nothing — it **detects**, and cannot be quietly defeated |
+
+Nothing in-process can stop someone with filesystem access replacing the whole
+database. What the chain gives you is that a rewritten log cannot be made
+self-consistent without recomputing every subsequent hash, and a log with
+entries removed announces itself.
+
+Because case edits log the before and after of every changed field, an edit is
+reconstructable from the log even though case records themselves are not
+versioned.
 
 ---
 
@@ -186,6 +245,11 @@ Interactive docs at `/docs`. Everything the UI does is available as JSON.
 | `GET` | `/api/me` | The caller's identity and permissions |
 | `GET`/`POST` | `/api/users` | List / create staff accounts (admin) |
 | `POST` | `/api/users/{id}/deactivate` | Revoke access immediately (admin) |
+| `GET`/`POST` | `/api/cases/{id}/notes` | Read / append clinical and handover notes |
+| `POST` | `/api/notes/{id}/receive` | Take a handover |
+| `GET` | `/api/handovers/outstanding` | Handovers nobody has taken |
+| `GET` | `/api/cases/{id}/audit` | One record's activity |
+| `GET` | `/api/audit` · `/api/audit/verify` | The log, and its chain status (admin) |
 
 Example:
 
@@ -238,17 +302,18 @@ app/
   main.py          FastAPI app
   config.py        settings
   db.py            engine and session
-  models.py        User, Patient, CaseRecord, Upload, Observation, Alert, Ward, Bed
+  models.py        User, Patient, CaseRecord, Upload, Observation, Alert, Note, AuditEvent
   auth.py          password hashing, sessions, bearer tokens, the role matrix
+  audit.py         hash chain, append-only guards, chain verification
   extraction.py    Claude vision/PDF → structured sheets (pluggable backend)
   intake.py        identity matching, record creation, safety rules
   scoring.py       NEWS2
   charts.py        server-rendered inline SVG for the vitals trend
   services.py      queries shared by API and UI
   routers/         api.py (JSON) · ui.py (HTML)
-  templates/       login, board, upload, review, case, users
+  templates/       login, board, upload, review, case, users, audit
 scripts/           seed_demo.py · create_user.py
-tests/             194 tests
+tests/             258 tests
 ```
 
 `extraction.set_extractor()` swaps the backend, which is how the tests run the
@@ -259,13 +324,16 @@ whole pipeline without touching the API.
 ## Tests
 
 ```bash
-pytest -q      # 194 tests
+pytest -q      # 258 tests
 ```
 
 Covers the NEWS2 chart parameter by parameter, identity matching and
 de-duplication, the no-overwrite rules, alert escalation, the full role matrix
 against real endpoints, login and lockout behaviour, chart geometry and its
-legibility rules, and the HTTP layer end to end.
+legibility rules, append-only enforcement through both the ORM and raw SQL,
+tamper *detection* (entries are altered and deleted with the triggers dropped,
+and the chain is asserted to notice), handover receipt rules, and the HTTP layer
+end to end.
 
 ---
 
@@ -283,9 +351,11 @@ does **not** yet include:
   retention limits, and a decision about what leaves the building — case sheets
   are sent to the Claude API for extraction, which is a data-processing
   arrangement your organisation must approve.
-- **A tamper-evident audit trail.** Who verified, who recorded and who
-  acknowledged are all captured against a user account, but edits are not
-  versioned and the log is not append-only.
+- **Off-box log shipping.** The audit log is append-only and tamper-evident, but
+  it lives in the same database as the data it describes. A real deployment
+  ships entries to separate storage, so losing the database does not lose the
+  log. The chain is also linear: SQLite serialises writers so it holds as
+  deployed, but on Postgres you need an advisory lock around each append.
 - **Regulatory clearance.** NEWS2 scoring and automated transcription in a
   clinical workflow may bring this under medical-device software rules in your
   jurisdiction (UKCA/CE under MDR, FDA CDS guidance, CDSCO, etc.).

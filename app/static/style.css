@@ -162,3 +162,46 @@ pre.token {
 .spark-value .unit { font-size: 12px; font-weight: 500; color: var(--muted); margin-left: 4px; }
 .spark-svg { display: block; max-width: 100%; height: auto; margin-top: 2px; }
 .spark-range { color: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+
+/* --- Notes and handover -------------------------------------------------- */
+.note-form { margin: 12px 0 20px; }
+.note-form summary { cursor: pointer; font-weight: 600; color: var(--accent); margin-bottom: 12px; }
+textarea {
+  display: block; width: 100%; margin-top: 4px; padding: 8px 10px;
+  border: 1px solid var(--line); border-radius: 8px; font: inherit; font-size: 15px;
+  color: var(--ink); background: #fff; resize: vertical;
+}
+fieldset.sbar { border: 1px solid var(--line); border-radius: 10px; padding: 12px 14px; margin: 0 0 12px; }
+fieldset.sbar legend { color: var(--muted); font-size: 13px; padding: 0 6px; }
+
+ol.notes { list-style: none; margin: 0; padding: 0; }
+.note {
+  border: 1px solid var(--line); border-left: 4px solid var(--line);
+  border-radius: 10px; padding: 12px 14px; margin-bottom: 10px;
+}
+.note.kind-handover { border-left-color: var(--accent); background: #f7fbff; }
+.note.kind-escalation { border-left-color: var(--high); background: #fff5f5; }
+.note.kind-correction { border-left-color: var(--medium); background: #fffaf0; }
+.note-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 8px; }
+.note-head small { display: inline; }
+.note p { margin: 6px 0; }
+.tag.handover { background: #e0edfa; color: #12507f; }
+.tag.escalation { background: #fde8e8; color: #9b2c2c; }
+.tag.correction { background: #fef5e7; color: #975a16; }
+.tag.progress { background: #eef2f7; color: #3a5470; }
+dl.sbar-view { grid-template-columns: 130px 1fr; margin: 8px 0; }
+.outstanding { margin-top: 8px; padding: 8px 12px; background: #fffdf2; border-radius: 8px; }
+.outstanding ul { margin: 4px 0 0; padding-left: 18px; }
+.received { color: var(--low); font-weight: 600; font-size: 14px; }
+
+/* --- Audit log ----------------------------------------------------------- */
+.chain.intact { border-left: 4px solid var(--low); }
+.chain.broken { border-left: 4px solid var(--high); background: #fff5f5; }
+.chain h2 { margin-bottom: 6px; }
+table.audit td { font-size: 14px; }
+code.hash {
+  font-size: 12px; background: #eef2f7; padding: 2px 6px; border-radius: 4px; color: var(--muted);
+}
+ul.changes { margin: 6px 0 0; padding-left: 16px; font-size: 13px; }
+ul.changes .was { color: var(--muted); text-decoration: line-through; }
+ul.changes .now { color: var(--ink); font-weight: 600; }

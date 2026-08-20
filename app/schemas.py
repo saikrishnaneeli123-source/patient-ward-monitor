@@ -5,7 +5,16 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from app.models import CaseStatus, Consciousness, Role, Sex, UploadStatus, VerificationStatus
+from app.models import (
+    CaseStatus,
+    Consciousness,
+    NoteKind,
+    Role,
+    Sex,
+    Shift,
+    UploadStatus,
+    VerificationStatus,
+)
 
 
 class ORMModel(BaseModel):
@@ -219,3 +228,64 @@ class BoardRow(BaseModel):
     last_observed_at: datetime | None
     open_alerts: int
     allergies: list
+
+
+# --------------------------------------------------------------------------
+# Clinical notes and handover
+# --------------------------------------------------------------------------
+
+
+class NoteIn(BaseModel):
+    kind: NoteKind = NoteKind.progress
+    shift: Shift | None = None
+    body: str | None = None
+    # SBAR — the standard shape of a clinical handover.
+    situation: str | None = None
+    background: str | None = None
+    assessment: str | None = None
+    recommendation: str | None = None
+    outstanding: list[str] = Field(default_factory=list, description="Tasks the next shift picks up.")
+    supersedes_id: int | None = Field(
+        default=None, description="Id of the note this one corrects; notes are never edited."
+    )
+
+
+class NoteOut(ORMModel):
+    id: int
+    case_record_id: int
+    kind: NoteKind
+    shift: Shift | None
+    body: str | None
+    situation: str | None
+    background: str | None
+    assessment: str | None
+    recommendation: str | None
+    outstanding: list
+    author_name: str
+    author_role: str
+    created_at: datetime
+    received_by: str | None
+    received_at: datetime | None
+    supersedes_id: int | None
+
+
+class AuditEventOut(ORMModel):
+    id: int
+    occurred_at: datetime
+    actor_name: str
+    actor_role: str
+    action: str
+    entity_type: str
+    entity_id: int | None
+    summary: str
+    details: dict
+    entry_hash: str
+
+
+class ChainStatusOut(BaseModel):
+    entries: int
+    intact: bool
+    broken_at_id: int | None = None
+    reason: str | None = None
+    checked_through: datetime | None = None
+    first_entry_at: datetime | None = None

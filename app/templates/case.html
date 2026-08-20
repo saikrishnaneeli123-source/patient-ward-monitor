@@ -145,6 +145,107 @@
 </section>
 {% endif %}
 
+<section class="card" id="notes">
+  <h2>Notes and handover</h2>
+  <p class="lede">
+    Notes are append-only, like a paper chart — nothing here is ever edited or deleted.
+    To correct an entry, write a correction that supersedes it; both stay readable.
+  </p>
+
+  {% set pending = notes | selectattr('awaiting_receipt') | list %}
+  {% if pending %}
+  <div class="banner allergy-banner">
+    ⚠ {{ pending|length }} handover{{ 's' if pending|length > 1 }} not yet received.
+  </div>
+  {% endif %}
+
+  {% if can(user, PERMS.WRITE_NOTE) %}
+  <details class="note-form">
+    <summary>Write a note</summary>
+    <form method="post" action="/cases/{{ case.id }}/notes">
+      <div class="obs-form">
+        <label>Kind
+          <select name="kind" id="note-kind">
+            <option value="progress">Progress note</option>
+            <option value="handover">Shift handover (SBAR)</option>
+            <option value="escalation">Escalation</option>
+          </select>
+        </label>
+        <label>Shift
+          <select name="shift">
+            <option value="">—</option>
+            {% for s in shifts %}<option value="{{ s.value }}">{{ s.value }}</option>{% endfor %}
+          </select>
+        </label>
+      </div>
+      <label>Note <textarea name="body" rows="3"></textarea></label>
+      <fieldset class="sbar">
+        <legend>Handover (SBAR) — optional</legend>
+        <label>Situation <textarea name="situation" rows="2"></textarea></label>
+        <label>Background <textarea name="background" rows="2"></textarea></label>
+        <label>Assessment <textarea name="assessment" rows="2"></textarea></label>
+        <label>Recommendation <textarea name="recommendation" rows="2"></textarea></label>
+        <label>Outstanding tasks — one per line <textarea name="outstanding" rows="3"></textarea></label>
+      </fieldset>
+      <button type="submit">Save note — as {{ user.full_name }}</button>
+    </form>
+  </details>
+  {% endif %}
+
+  {% if notes %}
+  <ol class="notes">
+    {% for note in notes %}
+    <li class="note kind-{{ note.kind.value }}">
+      <div class="note-head">
+        <span class="tag {{ note.kind.value }}">{{ note.kind.value }}</span>
+        {% if note.shift %}<span class="tag">{{ note.shift.value }} shift</span>{% endif %}
+        <strong>{{ note.author_name }}</strong>
+        <small>{{ note.author_role }} · {{ note.created_at.strftime('%d %b %H:%M') }}</small>
+      </div>
+
+      {% if note.supersedes_id %}
+      <p class="muted">Corrects note #{{ note.supersedes_id }} — the original is kept below.</p>
+      {% endif %}
+      {% if note.body %}<p>{{ note.body }}</p>{% endif %}
+
+      {% if note.is_sbar %}
+      <dl class="sbar-view">
+        {% if note.situation %}<dt>Situation</dt><dd>{{ note.situation }}</dd>{% endif %}
+        {% if note.background %}<dt>Background</dt><dd>{{ note.background }}</dd>{% endif %}
+        {% if note.assessment %}<dt>Assessment</dt><dd>{{ note.assessment }}</dd>{% endif %}
+        {% if note.recommendation %}<dt>Recommendation</dt><dd>{{ note.recommendation }}</dd>{% endif %}
+      </dl>
+      {% endif %}
+
+      {% if note.outstanding %}
+      <div class="outstanding">
+        <strong>Outstanding for the next shift</strong>
+        <ul>{% for task in note.outstanding %}<li>{{ task }}</li>{% endfor %}</ul>
+      </div>
+      {% endif %}
+
+      {% if note.kind.value == 'handover' %}
+        {% if note.received_at %}
+        <p class="received">✓ Received by {{ note.received_by }},
+          {{ note.received_at.strftime('%d %b %H:%M') }}</p>
+        {% elif note.author_id == user.id %}
+        <p class="muted">Waiting to be received by the incoming shift.</p>
+        {% elif can(user, PERMS.RECEIVE_HANDOVER) %}
+        <form method="post" action="/notes/{{ note.id }}/receive">
+          <button type="submit">Take this handover — as {{ user.full_name }}</button>
+        </form>
+        {% else %}
+        <p class="muted">Not yet received.</p>
+        {% endif %}
+      {% endif %}
+    </li>
+    {% endfor %}
+  </ol>
+  {% else %}
+  <p class="empty">No notes yet.</p>
+  {% endif %}
+</section>
+
 <section class="card trend">
   <h2>Vitals trend</h2>
   {% if trend.has_chart %}
@@ -196,5 +297,40 @@
     </tbody>
   </table>
   {% else %}<p class="empty">No observations recorded yet.</p>{% endif %}
+</section>
+
+<section class="card">
+  <h2>Record activity</h2>
+  <p class="lede">
+    Every action against this record, in order. The log is append-only and hash-chained,
+    so an entry cannot be altered or removed without the chain reporting it.
+  </p>
+  {% if trail %}
+  <table class="mini">
+    <thead><tr><th>When</th><th>Who</th><th>Action</th><th>Detail</th></tr></thead>
+    <tbody>
+    {% for entry in trail %}
+      <tr>
+        <td>{{ entry.occurred_at.strftime('%d %b %H:%M') }}</td>
+        <td>{{ entry.actor_name }}<small>{{ entry.actor_role }}</small></td>
+        <td>{{ action_labels.get(entry.action, entry.action) }}</td>
+        <td>
+          {{ entry.summary }}
+          {% set changes = entry.details.get('changes') %}
+          {% if changes %}
+          <ul class="changes">
+            {% for field, pair in changes.items() %}
+            <li><strong>{{ field.replace('_', ' ') }}</strong>:
+              <span class="was">{{ pair[0] if pair[0] is not none else '—' }}</span> →
+              <span class="now">{{ pair[1] if pair[1] is not none else '—' }}</span></li>
+            {% endfor %}
+          </ul>
+          {% endif %}
+        </td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">Nothing recorded yet.</p>{% endif %}
 </section>
 {% endblock %}

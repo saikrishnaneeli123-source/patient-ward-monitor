@@ -9,7 +9,7 @@ from __future__ import annotations
 import random
 from datetime import date, datetime, timedelta, timezone
 
-from app import auth, intake, models
+from app import audit, auth, intake, models, services
 from app.db import SessionLocal, init_db
 from app.extraction import ExtractedCaseSheet, ExtractedMedication, ExtractedVitals
 
@@ -151,6 +151,38 @@ def sheets() -> list[ExtractedCaseSheet]:
     ]
 
 
+HANDOVERS = {
+    "Bilal Khan": dict(
+        situation="Increasingly breathless overnight, now on 2L via nasal cannula.",
+        background="COPD, admitted 2 days ago with an infective exacerbation.",
+        assessment="NEWS2 climbing — 10 to 16 across the night. New confusion at 04:00.",
+        recommendation="Medical review before 09:00. ABG if no better. Keep sats 88-92%.",
+        outstanding=["Chase morning ABG", "Medical review before 09:00", "Repeat obs hourly"],
+    ),
+    "Devi Menon": dict(
+        situation="Settled overnight, no further wandering.",
+        background="Admitted 6 days ago, UTI with delirium. Dementia, lives alone.",
+        assessment="Still intermittently confused but orientated to place this morning.",
+        recommendation="Continue antibiotics, OT assessment before any discharge planning.",
+        outstanding=["OT assessment", "Speak to daughter about discharge"],
+    ),
+}
+
+
+def seed_notes(db, outcomes, nurse) -> None:
+    """A night-shift handover on the two patients who need one."""
+    for outcome in outcomes:
+        case = outcome.case_record
+        if case is None:
+            continue
+        sbar = HANDOVERS.get(case.patient.full_name)
+        if sbar is None:
+            continue
+        services.add_note(
+            db, case, nurse, kind=models.NoteKind.handover, shift=models.Shift.night, **sbar
+        )
+
+
 def main() -> None:
     init_db()
     db = SessionLocal()
@@ -169,9 +201,30 @@ def main() -> None:
 
         nurse = seed_staff(db)
         outcomes = [intake.apply_sheet(db, s, upload) for s in sheets()]
+
+        # The seeder bypasses process_upload, so log the same entries it would.
+        audit.record(
+            db, actor=nurse, action=audit.UPLOAD_PROCESSED, entity_type="upload",
+            entity_id=upload.id,
+            summary=f"'{upload.original_filename}': {len(outcomes)} sheet(s) detected.",
+            details={"seeded": True},
+        )
+        for outcome in outcomes:
+            if outcome.case_record is not None:
+                audit.record(
+                    db, actor=nurse, action=audit.CASE_CREATED, entity_type="case",
+                    entity_id=outcome.case_record.id,
+                    summary=(
+                        f"{outcome.case_record.case_number} created from "
+                        f"'{upload.original_filename}' page(s) {outcome.sheet.page_range}."
+                    ),
+                    details={"source": "case sheet extraction", "confidence": outcome.sheet.confidence},
+                )
         for outcome in outcomes:
             if outcome.case_record is not None:
                 seed_observation_history(db, outcome.case_record, nurse)
+        db.commit()
+        seed_notes(db, outcomes, nurse)
         upload.sheets_detected = len(outcomes)
         upload.records_created = sum(1 for o in outcomes if o.action == "created")
 
@@ -179,10 +232,7 @@ def main() -> None:
         first = outcomes[0].case_record
         doctor = db.query(models.User).filter_by(username="siyer").one()
         if first is not None:
-            first.verification = models.VerificationStatus.verified
-            first.verified_by = doctor.full_name
-            first.verified_by_id = doctor.id
-            first.verified_at = datetime.now(timezone.utc)
+            services.verify_case(db, first, doctor)
 
         db.commit()
         print(f"Seeded {upload.records_created} case records across 2 wards.")

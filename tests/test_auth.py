@@ -51,13 +51,13 @@ def test_api_tokens_are_stored_only_as_a_hash():
 # The role matrix
 # --------------------------------------------------------------------------
 
+CLINICAL = {auth.VIEW, auth.UPLOAD, auth.RECORD_OBSERVATIONS, auth.VERIFY_CASE,
+            auth.ACKNOWLEDGE_ALERT, auth.WRITE_NOTE, auth.RECEIVE_HANDOVER}
+
 EXPECTED = {
-    Role.admin: {auth.VIEW, auth.UPLOAD, auth.RECORD_OBSERVATIONS, auth.VERIFY_CASE,
-                 auth.EDIT_CASE, auth.DISCHARGE, auth.ACKNOWLEDGE_ALERT, auth.MANAGE_USERS},
-    Role.doctor: {auth.VIEW, auth.UPLOAD, auth.RECORD_OBSERVATIONS, auth.VERIFY_CASE,
-                  auth.EDIT_CASE, auth.DISCHARGE, auth.ACKNOWLEDGE_ALERT},
-    Role.nurse: {auth.VIEW, auth.UPLOAD, auth.RECORD_OBSERVATIONS, auth.VERIFY_CASE,
-                 auth.ACKNOWLEDGE_ALERT},
+    Role.admin: CLINICAL | {auth.EDIT_CASE, auth.DISCHARGE, auth.MANAGE_USERS, auth.VIEW_AUDIT},
+    Role.doctor: CLINICAL | {auth.EDIT_CASE, auth.DISCHARGE},
+    Role.nurse: set(CLINICAL),
     Role.clerk: {auth.VIEW, auth.UPLOAD},
     Role.readonly: {auth.VIEW},
 }
@@ -78,6 +78,11 @@ def test_clerks_and_readonly_have_no_clinical_authority():
         assert auth.VERIFY_CASE not in perms
         assert auth.RECORD_OBSERVATIONS not in perms
         assert auth.EDIT_CASE not in perms
+        assert auth.WRITE_NOTE not in perms
+
+
+def test_only_admin_reads_the_audit_log():
+    assert [r for r in Role if auth.VIEW_AUDIT in auth.permissions_for(r)] == [Role.admin]
 
 
 def test_nurses_may_verify_but_not_edit_or_discharge():
@@ -341,3 +346,13 @@ def test_an_observation_cannot_be_attributed_to_another_member_of_staff(client_a
 
     nurse.post(f"/api/cases/{a_case}/observations", json={"pulse": 80})
     assert nurse.get(f"/api/cases/{a_case}/observations").json()[0]["recorded_by"] == "Test Nurse"
+
+
+def test_every_permission_is_exposed_to_the_templates():
+    """A permission missing from PERMS resolves to undefined and hides its control."""
+    from app.routers.ui import templates
+
+    exposed = templates.env.globals["PERMS"]
+    declared = {v for perms in auth.ROLE_PERMISSIONS.values() for v in perms}
+    assert declared <= set(exposed.values())
+    assert set(exposed) == set(auth.ALL_PERMISSIONS)

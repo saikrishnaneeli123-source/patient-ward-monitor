@@ -126,9 +126,15 @@ VERIFY_CASE = "verify a case record"
 EDIT_CASE = "edit a case record"
 DISCHARGE = "discharge a patient"
 ACKNOWLEDGE_ALERT = "acknowledge alerts"
+WRITE_NOTE = "write clinical notes"
+RECEIVE_HANDOVER = "receive a handover"
+VIEW_AUDIT = "read the audit log"
 MANAGE_USERS = "manage users"
 
-CLINICAL = {VIEW, UPLOAD, RECORD_OBSERVATIONS, VERIFY_CASE, ACKNOWLEDGE_ALERT}
+CLINICAL = {
+    VIEW, UPLOAD, RECORD_OBSERVATIONS, VERIFY_CASE, ACKNOWLEDGE_ALERT,
+    WRITE_NOTE, RECEIVE_HANDOVER,
+}
 
 ROLE_PERMISSIONS: dict[Role, set[str]] = {
     # Doctors own the clinical record: they may correct and discharge.
@@ -138,10 +144,25 @@ ROLE_PERMISSIONS: dict[Role, set[str]] = {
     # Ward clerks scan paperwork and read the board; no clinical authority.
     Role.clerk: {VIEW, UPLOAD},
     Role.readonly: {VIEW},
-    Role.admin: {
-        VIEW, UPLOAD, RECORD_OBSERVATIONS, VERIFY_CASE,
-        EDIT_CASE, DISCHARGE, ACKNOWLEDGE_ALERT, MANAGE_USERS,
-    },
+    Role.admin: CLINICAL | {EDIT_CASE, DISCHARGE, MANAGE_USERS, VIEW_AUDIT},
+}
+
+
+# Name -> value for every permission, so templates and tests read from the same
+# place the role matrix does. A hand-kept copy silently drifts, and a permission
+# missing from a template resolves to undefined — hiding the control with no error.
+ALL_PERMISSIONS: dict[str, str] = {
+    "VIEW": VIEW,
+    "UPLOAD": UPLOAD,
+    "RECORD_OBSERVATIONS": RECORD_OBSERVATIONS,
+    "VERIFY_CASE": VERIFY_CASE,
+    "EDIT_CASE": EDIT_CASE,
+    "DISCHARGE": DISCHARGE,
+    "ACKNOWLEDGE_ALERT": ACKNOWLEDGE_ALERT,
+    "WRITE_NOTE": WRITE_NOTE,
+    "RECEIVE_HANDOVER": RECEIVE_HANDOVER,
+    "VIEW_AUDIT": VIEW_AUDIT,
+    "MANAGE_USERS": MANAGE_USERS,
 }
 
 
@@ -170,16 +191,44 @@ def authenticate(db: Session, username: str, password: str) -> User | None:
         # Hash anyway so a missing user is not distinguishable by response time.
         verify_password(password, hash_password("timing-equalisation-placeholder"))
         record_failure(username)
+        _audit_login(db, user, "unknown or deactivated account", username=username)
+        db.commit()
         return None
 
     if not verify_password(password, user.password_hash):
         record_failure(username)
+        _audit_login(db, user, "wrong password", username=username)
+        db.commit()
         return None
 
     clear_failures(username)
     user.last_login_at = datetime.now(timezone.utc)
+    _audit_login(db, user, LOGIN_OK)
     db.commit()
     return user
+
+
+LOGIN_OK = "ok"
+
+
+def _audit_login(db: Session, user: User | None, outcome: str, username: str | None = None) -> None:
+    """Log the attempt. Imported lazily to keep auth free of an import cycle."""
+    from app import audit
+
+    succeeded = outcome == LOGIN_OK
+    audit.record(
+        db,
+        actor=user if succeeded else None,
+        action=audit.LOGIN_SUCCEEDED if succeeded else audit.LOGIN_FAILED,
+        entity_type="user",
+        entity_id=user.id if user else None,
+        summary=(
+            f"{user.full_name} signed in."
+            if succeeded
+            else f"Failed sign-in for '{username}' — {outcome}."
+        ),
+        details={"username": username or (user.username if user else None), "outcome": outcome},
+    )
 
 
 def user_from_token(db: Session, token: str) -> User | None:

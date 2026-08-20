@@ -28,6 +28,9 @@ def get_db() -> Iterator[Session]:
 
 
 def init_db() -> None:
-    from app import models  # noqa: F401  (registers mappers before create_all)
+    from app import audit, models  # noqa: F401  (registers mappers before create_all)
 
     Base.metadata.create_all(bind=engine)
+    # Append-only enforcement, in the ORM and in the database itself.
+    audit.install_guards()
+    audit.install_db_triggers(engine)
