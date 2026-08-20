@@ -295,3 +295,65 @@ def test_extraction_failure_is_recorded_without_losing_the_scan(db):
     assert upload.status == models.UploadStatus.failed
     assert upload.error == "model unavailable"
     assert db.query(models.CaseRecord).count() == 0
+
+
+# --------------------------------------------------------------------------
+# Re-scanning the same sheet
+# --------------------------------------------------------------------------
+
+def test_rescanning_a_sheet_does_not_duplicate_its_vitals(db):
+    """Found by running the app: a re-scan added a phantom observation and a
+    second copy of the same alert."""
+    vitals = ExtractedVitals(respiratory_rate=22, spo2=96, on_oxygen=False,
+                             systolic_bp=106, pulse=104, temperature_c=38.9,
+                             consciousness="alert")
+    first = intake.apply_sheet(db, sheet(vitals=vitals))
+    db.commit()
+    assert len(first.case_record.observations) == 1
+
+    again = intake.apply_sheet(db, sheet(vitals=vitals))
+    db.commit()
+
+    assert again.action == "updated"
+    assert len(again.case_record.observations) == 1, "the same reading must not be stored twice"
+
+
+def test_rescanning_does_not_raise_the_same_alert_twice(db):
+    vitals = ExtractedVitals(respiratory_rate=28, spo2=88, on_oxygen=True,
+                             systolic_bp=88, pulse=132, temperature_c=39.4,
+                             consciousness="voice")
+    intake.apply_sheet(db, sheet(vitals=vitals))
+    db.commit()
+    outcome = intake.apply_sheet(db, sheet(vitals=vitals))
+    db.commit()
+    assert len(outcome.case_record.alerts) == 1
+
+
+def test_a_sheet_with_genuinely_new_vitals_is_still_recorded(db):
+    """Only an identical reading is suppressed — a later round must still land."""
+    outcome = intake.apply_sheet(db, sheet(vitals=ExtractedVitals(pulse=80, spo2=98)))
+    db.commit()
+    updated = intake.apply_sheet(db, sheet(vitals=ExtractedVitals(pulse=120, spo2=91)))
+    db.commit()
+    assert len(updated.case_record.observations) == 2
+
+
+def test_a_bedside_observation_with_the_same_values_is_never_suppressed(db):
+    """Two identical readings taken by a nurse are real data, not a duplicate."""
+    outcome = intake.apply_sheet(db, sheet(vitals=ExtractedVitals(pulse=80, spo2=98)))
+    case = outcome.case_record
+    manual = models.Observation(case_record_id=case.id, pulse=80, spo2=98, recorded_by="N. Patel")
+    intake.score_observation(manual)
+    db.add(manual)
+    db.commit()
+    db.refresh(case)
+    assert len(case.observations) == 2
+
+
+def test_scoring_works_on_an_observation_that_is_not_flushed_yet():
+    """Column defaults land on flush, so an in-memory object can hold None."""
+    observation = models.Observation(case_record_id=1, pulse=130, spo2=90)
+    assert observation.consciousness is None
+    intake.score_observation(observation)
+    assert observation.news2_score == 5
+    assert observation.risk_level == "medium"

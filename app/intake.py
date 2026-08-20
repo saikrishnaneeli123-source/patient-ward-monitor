@@ -28,6 +28,9 @@ from app.scoring import alerts_for, calculate_news2
 
 logger = logging.getLogger(__name__)
 
+# Marks an observation as transcribed off a scan rather than taken at the bedside.
+SHEET_SOURCE = "case sheet (auto-extracted)"
+
 DATE_FORMATS = [
     "%Y-%m-%d", "%d/%m/%Y", "%d-%m-%Y", "%m/%d/%Y", "%d.%m.%Y",
     "%d %b %Y", "%d %B %Y", "%b %d, %Y", "%B %d, %Y",
@@ -304,20 +307,45 @@ def _apply_clinical(case: models.CaseRecord, sheet: ExtractedCaseSheet, *, overw
     return warnings
 
 
+VITALS_FIELDS = (
+    "respiratory_rate", "spo2", "on_oxygen", "systolic_bp",
+    "diastolic_bp", "pulse", "temperature_c",
+)
+
+
+def _already_transcribed(case: models.CaseRecord, vitals) -> bool:
+    """Has this exact set of sheet vitals already been recorded for this case?
+
+    Re-scanning a sheet — or re-running extraction on a stored one — must not
+    add a second copy of the same reading. A duplicate would put a phantom point
+    on the trend chart and raise the same alert twice.
+    """
+    incoming = {field: getattr(vitals, field) for field in VITALS_FIELDS}
+    incoming["on_oxygen"] = bool(incoming["on_oxygen"])
+    for existing in case.observations:
+        if existing.recorded_by != SHEET_SOURCE:
+            continue
+        if all(getattr(existing, field) == incoming[field] for field in VITALS_FIELDS):
+            return True
+    return False
+
+
 def record_observation_from_sheet(
     db: Session, case: models.CaseRecord, sheet: ExtractedCaseSheet
 ) -> models.Observation | None:
-    """Store the vitals printed on the sheet as the first observation."""
+    """Store the vitals printed on the sheet as an observation, once."""
     vitals = sheet.vitals
     if vitals is None:
         return None
     values = vitals.model_dump(exclude_none=True)
     if not values:
         return None
+    if _already_transcribed(case, vitals):
+        return None
 
     observation = models.Observation(
         case_record=case,
-        recorded_by="case sheet (auto-extracted)",
+        recorded_by=SHEET_SOURCE,
         respiratory_rate=vitals.respiratory_rate,
         spo2=vitals.spo2,
         on_oxygen=bool(vitals.on_oxygen),
@@ -335,17 +363,27 @@ def record_observation_from_sheet(
     return observation
 
 
-def score_observation(observation: models.Observation) -> None:
-    result = calculate_news2(
+def _news2_args(observation: models.Observation) -> dict:
+    """Read scoring inputs off an observation that may not be flushed yet.
+
+    Column defaults are applied on flush, so an in-memory object can still have
+    None where the database would have a default — score it the same either way.
+    """
+    consciousness = observation.consciousness or models.Consciousness.alert
+    return dict(
         respiratory_rate=observation.respiratory_rate,
         spo2=observation.spo2,
-        on_oxygen=observation.on_oxygen,
-        spo2_scale=observation.spo2_scale,
+        on_oxygen=bool(observation.on_oxygen),
+        spo2_scale=observation.spo2_scale or 1,
         systolic_bp=observation.systolic_bp,
         pulse=observation.pulse,
         temperature_c=observation.temperature_c,
-        consciousness=observation.consciousness.value,
+        consciousness=consciousness.value,
     )
+
+
+def score_observation(observation: models.Observation) -> None:
+    result = calculate_news2(**_news2_args(observation))
     observation.news2_score = result.score
     observation.risk_level = result.risk
     observation.news2_breakdown = result.as_dict()
@@ -355,16 +393,7 @@ def raise_alerts(db: Session, observation: models.Observation) -> list[models.Al
     """Create alert rows for an observation that breaches escalation thresholds."""
     if not observation.news2_breakdown:
         return []
-    result = calculate_news2(
-        respiratory_rate=observation.respiratory_rate,
-        spo2=observation.spo2,
-        on_oxygen=observation.on_oxygen,
-        spo2_scale=observation.spo2_scale,
-        systolic_bp=observation.systolic_bp,
-        pulse=observation.pulse,
-        temperature_c=observation.temperature_c,
-        consciousness=observation.consciousness.value,
-    )
+    result = calculate_news2(**_news2_args(observation))
     created = []
     for severity, message in alerts_for(result):
         alert = models.Alert(
