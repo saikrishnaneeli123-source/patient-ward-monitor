@@ -62,6 +62,12 @@ def _safe_next(target: str | None) -> str:
 # Sessions
 # --------------------------------------------------------------------------
 
+@router.get("/offline", response_class=HTMLResponse)
+def offline_page(request: Request, db: Session = Depends(get_db)):
+    """Shown by the service worker when the server cannot be reached."""
+    return templates.TemplateResponse(request, "offline.html", _context(request, db))
+
+
 @router.get("/login", response_class=HTMLResponse)
 def login_page(request: Request, next: str = "/", error: str | None = None, db: Session = Depends(get_db)):
     if auth.current_user(request, db) is not None:

@@ -5,8 +5,8 @@ import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from fastapi import FastAPI, Request
-from fastapi.responses import JSONResponse, RedirectResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.sessions import SessionMiddleware
 
@@ -75,6 +75,33 @@ def create_app() -> FastAPI:
     @app.get("/healthz", include_in_schema=False)
     def healthz() -> dict:
         return {"status": "ok"}
+
+    @app.get("/.well-known/assetlinks.json", include_in_schema=False)
+    def asset_links() -> FileResponse:
+        """Digital Asset Links, needed only to ship this as an Android TWA.
+
+        Drop the file Bubblewrap generates at app/static/well-known/assetlinks.json
+        and it is served here; see DEPLOY.md. Absent, this 404s, which is correct
+        for a deployment that is not wrapped for the Play Store.
+        """
+        path = static_dir / "well-known" / "assetlinks.json"
+        if not path.exists():
+            raise HTTPException(404, "No Digital Asset Links file has been installed.")
+        return FileResponse(path, media_type="application/json")
+
+    @app.get("/manifest.webmanifest", include_in_schema=False)
+    def manifest() -> FileResponse:
+        return FileResponse(static_dir / "manifest.webmanifest", media_type="application/manifest+json")
+
+    @app.get("/sw.js", include_in_schema=False)
+    def service_worker() -> FileResponse:
+        # Served from the root so its scope covers the whole app; never cached
+        # by the browser, or an old worker outlives a deploy.
+        return FileResponse(
+            static_dir / "sw.js",
+            media_type="application/javascript",
+            headers={"Cache-Control": "no-cache", "Service-Worker-Allowed": "/"},
+        )
 
     return app
 

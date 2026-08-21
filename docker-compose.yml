@@ -1,0 +1,21 @@
+services:
+  ward:
+    build: .
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      WARD_ENV: production
+      # Generate once and keep it: python -c "import secrets; print(secrets.token_urlsafe(48))"
+      WARD_SECRET_KEY: ${WARD_SECRET_KEY:?set WARD_SECRET_KEY in .env before starting}
+      # Enables automatic case-sheet extraction. Without it the app still runs,
+      # stores scans, and accepts records typed in by hand.
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      # Set false only if you terminate TLS elsewhere and know what you are doing.
+      WARD_COOKIE_SECURE: ${WARD_COOKIE_SECURE:-true}
+    volumes:
+      # Patient data and uploaded scans. Back this up; encrypt the underlying disk.
+      - ward-data:/data
+
+volumes:
+  ward-data:

@@ -50,26 +50,26 @@
   <tbody>
   {% for row in rows %}
     <tr class="risk-{{ row.risk_level or 'none' }}">
-      <td class="bed">{{ row.bed_label or '—' }}<small>{{ row.ward_name or '' }}</small></td>
-      <td>
+      <td data-label="Bed" class="bed">{{ row.bed_label or '—' }}<small>{{ row.ward_name or '' }}</small></td>
+      <td class="patient-cell">
         <a href="/cases/{{ row.case_record_id }}"><strong>{{ row.patient_name }}</strong></a>
         <small>{{ row.age_years or '?' }}{{ row.sex.value[0]|upper if row.sex.value != 'unknown' else '' }} · {{ row.case_number }}</small>
       </td>
-      <td>{{ row.mrn or '—' }}</td>
-      <td>{{ row.provisional_diagnosis or '—' }}</td>
-      <td class="score">
+      <td data-label="MRN">{{ row.mrn or '—' }}</td>
+      <td data-label="Diagnosis">{{ row.provisional_diagnosis or '—' }}</td>
+      <td data-label="NEWS2" class="score">
         {% if row.news2_score is not none %}
           <span class="pill risk-{{ row.risk_level }}">{{ row.news2_score }}</span>
         {% else %}<span class="muted">no obs</span>{% endif %}
       </td>
-      <td>{{ row.last_observed_at.strftime('%d %b %H:%M') if row.last_observed_at else '—' }}</td>
-      <td>
+      <td data-label="Last obs">{{ row.last_observed_at.strftime('%d %b %H:%M') if row.last_observed_at else '—' }}</td>
+      <td data-label="Allergies">
         {% set flagged = row.allergies|real_allergies %}
         {% if flagged %}<span class="allergy">{{ flagged|join(', ') }}</span>
         {% elif row.allergies %}<span class="muted">{{ row.allergies|join(', ') }}</span>
         {% else %}<span class="muted">not recorded</span>{% endif %}
       </td>
-      <td>
+      <td data-label="Status">
         {% if row.verification.value == 'unverified' %}<span class="tag unverified">unverified</span>
         {% else %}<span class="tag verified">verified</span>{% endif %}
         {% if row.open_alerts %}<span class="tag alerting">{{ row.open_alerts }} alert{{ 's' if row.open_alerts > 1 }}</span>{% endif %}

@@ -1,0 +1,13 @@
+.git
+.venv
+.runtmp
+__pycache__
+*.pyc
+.pytest_cache
+tests
+docs
+uploads
+*.db
+*.sqlite3
+.env
+ward.db

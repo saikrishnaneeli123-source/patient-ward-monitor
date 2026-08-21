@@ -1,0 +1,18 @@
+{% extends "base.html" %}
+{% block title %}No connection{% endblock %}
+{% block content %}
+<div class="login">
+  <h1>No connection</h1>
+  <p class="lede">
+    This device cannot reach the ward server, so no patient information can be shown.
+  </p>
+  <div class="card">
+    <p>
+      Nothing is stored on this device on purpose — a NEWS2 score or a drug chart
+      from an hour ago could be dangerously out of date. Reconnect and reload, and
+      use the paper chart in the meantime.
+    </p>
+  </div>
+  <p><button onclick="location.reload()">Try again</button></p>
+</div>
+{% endblock %}

@@ -256,3 +256,57 @@ ul.changes .now { color: var(--ink); font-weight: 600; }
   .doc-allergy { border-width: 1pt; }
   a { text-decoration: none; color: inherit; }
 }
+
+/* --- Phones and small tablets -------------------------------------------
+   A ward board is read on a phone at the bedside, so the wide table becomes
+   one card per patient. Dense numeric tables (observations, audit) keep their
+   columns and scroll inside themselves — the page body never scrolls sideways. */
+@media (max-width: 760px) {
+  main { padding: 14px; }
+  .topbar { flex-wrap: wrap; gap: 10px 16px; padding: 10px 14px; }
+  .topbar nav { gap: 12px; flex-wrap: wrap; font-size: 14px; }
+  .whoami { margin-left: 0; width: 100%; justify-content: space-between; }
+
+  .page-head { flex-direction: column; align-items: stretch; }
+  .stats { display: grid; grid-template-columns: repeat(2, 1fr); }
+  .stat { padding: 10px 12px; }
+  .columns, .doc-grid, .obs-form { grid-template-columns: 1fr; }
+  /* Grid and flex children default to min-width:auto and refuse to shrink below
+     their content, which pushes the whole page sideways. */
+  .columns > *, .doc-grid > *, .obs-form > *, .sparks > * { min-width: 0; }
+  dd, .note p, .summary-doc p, td { overflow-wrap: anywhere; }
+  dl, .doc-grid dl { grid-template-columns: 100px 1fr; }
+  .summary-doc { padding: 18px 16px; }
+
+  /* One card per row. */
+  table.board, table.board tbody, table.board tr, table.board td { display: block; width: 100%; }
+  table.board thead { display: none; }
+  table.board { border: none; background: none; }
+  table.board tr {
+    background: var(--panel); border: 1px solid var(--line); border-left: 4px solid var(--line);
+    border-radius: 10px; margin-bottom: 10px; padding: 10px 12px;
+  }
+  table.board tr.risk-high { border-left-color: var(--high); }
+  table.board tr.risk-medium, table.board tr.risk-low-medium { border-left-color: var(--medium); }
+  table.board td { border: none; padding: 3px 0; display: flex; gap: 10px; align-items: baseline; }
+  table.board td::before {
+    content: attr(data-label); flex: 0 0 84px; color: var(--muted);
+    font-size: 12px; text-transform: uppercase; letter-spacing: .04em;
+  }
+  table.board td.patient-cell { display: block; margin-bottom: 4px; }
+  table.board td.patient-cell::before { content: none; }
+  table.board td.bed { font-size: 15px; }
+  table.board td.score { text-align: left; }
+
+  /* Numeric tables stay tables, and scroll on their own. */
+  table.mini { display: block; overflow-x: auto; white-space: nowrap; }
+
+  .alert { flex-direction: column; align-items: stretch; gap: 8px; }
+  .alert form { flex-direction: column; }
+  .alert input[type=text] { width: 100%; }
+  .verify form { flex-direction: column; align-items: stretch; }
+  .verify input[type=text] { width: 100%; }
+  button, .button { width: 100%; text-align: center; }
+  .topbar button.link, button.link { width: auto; }
+  .filters { gap: 6px; }
+}

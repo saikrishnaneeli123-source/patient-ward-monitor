@@ -356,3 +356,47 @@ def test_every_permission_is_exposed_to_the_templates():
     declared = {v for perms in auth.ROLE_PERMISSIONS.values() for v in perms}
     assert declared <= set(exposed.values())
     assert set(exposed) == set(auth.ALL_PERMISSIONS)
+
+
+# --------------------------------------------------------------------------
+# Production configuration
+# --------------------------------------------------------------------------
+
+def _settings(**env):
+    """Build Settings with a clean cache and a controlled environment."""
+    import os
+    from unittest.mock import patch
+
+    from app.config import Settings, get_settings
+
+    get_settings.cache_clear()
+    keys = ("WARD_ENV", "WARD_SECRET_KEY", "WARD_COOKIE_SECURE")
+    cleaned = {k: v for k, v in os.environ.items() if k not in keys}
+    with patch.dict(os.environ, {**cleaned, **env}, clear=True):
+        try:
+            return get_settings()
+        finally:
+            get_settings.cache_clear()
+
+
+def test_production_refuses_to_start_without_a_secret_key():
+    """A random key per restart means everyone is logged out on every deploy."""
+    import pytest as _pytest
+
+    with _pytest.raises(RuntimeError, match="WARD_SECRET_KEY must be set"):
+        _settings(WARD_ENV="production")
+
+
+def test_development_generates_a_key_and_carries_on():
+    assert _settings(WARD_ENV="development").secret_key
+
+
+def test_production_forces_https_only_cookies():
+    assert _settings(WARD_ENV="production", WARD_SECRET_KEY="x" * 40).cookie_secure is True
+
+
+def test_an_explicit_cookie_setting_still_wins_in_production():
+    settings = _settings(
+        WARD_ENV="production", WARD_SECRET_KEY="x" * 40, WARD_COOKIE_SECURE="false"
+    )
+    assert settings.cookie_secure is False

@@ -14,7 +14,32 @@ updates their record instead of duplicating them.
 
 ![Shift handover](docs/handover.png)
 
+Installed on a phone — sign-in, the ward board as one card per patient, and a case record:
+
+![On a phone](docs/mobile.png)
+
 ![Discharge summary](docs/discharge-summary.png)
+
+---
+
+## Running it for real
+
+**[DEPLOY.md](DEPLOY.md)** covers putting this on a server, installing it on a
+phone or ward tablet, and — the question that always comes up — what it would
+take to publish it to the Play Store.
+
+The short version: this is a web app, so there is no APK to upload. It ships as
+an **installable web app**, so Android Chrome offers "Install app" and iOS Safari
+offers "Add to Home Screen"; it then runs full-screen with its own icon and most
+staff cannot tell the difference. An actual Play Store listing means wrapping
+this same web app in an Android shell (a Trusted Web Activity), which needs a
+public HTTPS domain and a Play developer account — DEPLOY.md walks through it,
+including why a hospital usually wants Managed Google Play rather than the public
+store.
+
+```bash
+docker compose up -d --build      # production; see DEPLOY.md first
+```
 
 ---
 
@@ -35,6 +60,10 @@ uvicorn app.main:app --reload
 ```
 
 Open <http://127.0.0.1:8000/> and sign in. `/docs` has the API.
+
+The layout works on a phone: on a narrow screen the ward board becomes one card
+per patient, and the dense observation tables scroll inside themselves rather
+than pushing the page sideways.
 
 The demo seed creates `admin`, `siyer` (doctor), `mthomas` (nurse) and `clerk`,
 all with the password `ward-demo-password` — for looking around locally, never
@@ -188,6 +217,21 @@ The rest of the safety posture carries over:
 
 ---
 
+## Installed on a device, and offline
+
+The app ships a web manifest, icons and a service worker, so it installs to a
+home screen and runs full-screen. The service worker caches the stylesheet,
+icons and an offline page — **and nothing else.**
+
+That is deliberate. A nurse acting on a cached NEWS2 score from three hours ago
+is worse off than one told plainly that the device is offline; stale
+observations, an outdated allergy list or a superseded drug chart are exactly
+what causes harm. A cached chart is also patient data sitting on a shared ward
+tablet, outside the server's control. So offline shows a page that says so and
+points at the paper chart. A test asserts no patient route is ever precached.
+
+---
+
 ## The audit log
 
 Every meaningful action is logged: records created, edited (with the old and new
@@ -331,7 +375,8 @@ All settings take a `WARD_` prefix and can live in `.env` (see `.env.example`).
 | `WARD_MAX_UPLOAD_MB` | `25` | Per-file upload limit |
 | `WARD_SECRET_KEY` | random | Signs session cookies — **set this in production**, or every restart signs everyone out |
 | `WARD_SESSION_MAX_AGE` | `28800` | Session lifetime in seconds (one shift) |
-| `WARD_COOKIE_SECURE` | `false` | Set `true` behind HTTPS |
+| `WARD_COOKIE_SECURE` | `false` | Set `true` behind HTTPS (forced on in production) |
+| `WARD_ENV` | `development` | `production` refuses unsafe defaults and forces secure cookies |
 
 Accepted uploads: PDF, PNG, JPEG, WebP, GIF, TIFF, BMP. Images are downscaled to
 1568px on the long edge and converted if needed; PDFs are sent whole so Claude
@@ -356,7 +401,8 @@ app/
   charts.py        server-rendered inline SVG for the vitals trend
   services.py      queries shared by API and UI
   routers/         api.py (JSON) · ui.py (HTML)
-  templates/       login, board, upload, review, case, users, audit, summary
+  templates/       login, board, upload, review, case, users, audit, offline
+  static/          stylesheet, PWA manifest, service worker, icons, summary
 scripts/           seed_demo.py · create_user.py
 tests/             309 tests
 ```

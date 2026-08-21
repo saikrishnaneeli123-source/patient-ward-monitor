@@ -8,3 +8,4 @@ venv/
 uploads/
 .pytest_cache/
 .coverage
+.runtmp/

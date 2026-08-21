@@ -1,4 +1,5 @@
 """Application settings, loaded from the environment (see .env.example)."""
+import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -7,6 +8,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="WARD_", env_file=".env", extra="ignore")
+
+    # "development" or "production". Production refuses unsafe defaults rather
+    # than starting up and quietly being insecure.
+    env: str = "development"
 
     database_url: str = "sqlite:///./ward.db"
 
@@ -29,12 +34,22 @@ class Settings(BaseSettings):
     def max_upload_bytes(self) -> int:
         return self.max_upload_mb * 1024 * 1024
 
+    @property
+    def is_production(self) -> bool:
+        return self.env.strip().lower() in ("production", "prod")
+
 
 @lru_cache
 def get_settings() -> Settings:
     settings = Settings()
     settings.upload_dir.mkdir(parents=True, exist_ok=True)
     if not settings.secret_key:
+        if settings.is_production:
+            raise RuntimeError(
+                "WARD_SECRET_KEY must be set when WARD_ENV=production. Without it, "
+                "session cookies are signed with a key that changes on every restart. "
+                "Generate one with: python -c \"import secrets; print(secrets.token_urlsafe(48))\""
+            )
         import logging
         import secrets
 
@@ -43,4 +58,9 @@ def get_settings() -> Settings:
             "WARD_SECRET_KEY is not set — using a random key. Sessions will not "
             "survive a restart, and multiple workers will reject each other's cookies."
         )
+
+    # Cookies must be HTTPS-only in production unless deliberately overridden.
+    if settings.is_production and "WARD_COOKIE_SECURE" not in os.environ:
+        settings.cookie_secure = True
+
     return settings
