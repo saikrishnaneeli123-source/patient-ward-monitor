@@ -1,0 +1,220 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0b6b53">
+<title>MediRemind - Medicine Reminder</title>
+<link rel="manifest" href="/app/manifest.webmanifest">
+<link rel="stylesheet" href="/app/styles.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>💊</text></svg>">
+</head>
+<body data-scale="large">
+
+<!-- ===================== Ringing alarm ===================== -->
+<div id="alarm" class="alarm" hidden role="alertdialog" aria-modal="true" aria-labelledby="alarm-title">
+  <div class="alarm__inner">
+    <p class="alarm__kicker">⏰ Time for your medicine</p>
+    <p id="alarm-clock" class="alarm__clock"></p>
+    <h1 id="alarm-title" class="alarm__name">—</h1>
+    <p id="alarm-dose" class="alarm__dose"></p>
+    <p id="alarm-food" class="alarm__food"></p>
+    <p id="alarm-queue" class="alarm__queue" hidden></p>
+    <div class="alarm__actions">
+      <button id="alarm-taken" class="btn btn--huge btn--green">✓ I have taken it</button>
+      <button id="alarm-snooze" class="btn btn--huge btn--amber">⏱ Remind me in 10 minutes</button>
+      <button id="alarm-skip" class="btn btn--big btn--ghost">Skip this dose</button>
+    </div>
+    <button id="alarm-quiet" class="alarm__quiet">🔇 Stop the sound</button>
+  </div>
+</div>
+
+<!-- ===================== Header ===================== -->
+<header class="topbar">
+  <div class="topbar__brand">
+    <span class="topbar__logo" aria-hidden="true">💊</span>
+    <span>MediRemind</span>
+  </div>
+  <div class="topbar__right">
+    <label class="sr-only" for="patient-select">Choose patient</label>
+    <select id="patient-select" class="patient-select"></select>
+    <button id="text-size" class="iconbtn" title="Change text size" aria-label="Change text size">A<sup>+</sup></button>
+  </div>
+</header>
+
+<div id="banner" class="banner" hidden></div>
+
+<main id="main">
+
+  <!-- ===================== TODAY ===================== -->
+  <section id="view-today" class="view">
+    <div id="no-patient" class="card card--intro" hidden>
+      <h2>Welcome 👋</h2>
+      <p>Let us set up the first patient. It takes less than a minute.</p>
+      <button class="btn btn--huge btn--green" data-go="settings">Add a patient</button>
+    </div>
+
+    <div id="today-body" hidden>
+      <section class="next-card" id="next-card">
+        <p class="next-card__label">Next medicine</p>
+        <p class="next-card__time" id="next-time">—</p>
+        <p class="next-card__name" id="next-name">Nothing scheduled</p>
+        <p class="next-card__meta" id="next-meta"></p>
+        <p class="next-card__countdown" id="next-countdown"></p>
+      </section>
+
+      <div class="daystats" id="daystats"></div>
+
+      <div id="refill-box" class="notice notice--amber" hidden></div>
+
+      <h2 class="section-title">
+        <span>Today's medicines</span>
+        <span class="section-title__date" id="today-date"></span>
+      </h2>
+      <ol id="dose-list" class="dose-list"></ol>
+
+      <div id="prn-box" class="prn-box" hidden>
+        <h2 class="section-title">Only when needed</h2>
+        <ul id="prn-list" class="prn-list"></ul>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== UPLOAD PRESCRIPTION ===================== -->
+  <section id="view-upload" class="view" hidden>
+    <h2 class="section-title">Add a prescription</h2>
+
+    <div class="steps" id="steps">
+      <span class="steps__item is-active" data-step="1">1. Upload</span>
+      <span class="steps__item" data-step="2">2. Check</span>
+      <span class="steps__item" data-step="3">3. Alarms set</span>
+    </div>
+
+    <div id="step-upload" class="card">
+      <p class="lead">Take a photo of the prescription, or type it in. We will read the
+        medicines and set the alarms for you.</p>
+
+      <label class="dropzone" id="dropzone">
+        <input type="file" id="file-input" accept="image/*" capture="environment" hidden>
+        <span class="dropzone__icon" aria-hidden="true">📷</span>
+        <span class="dropzone__title">Take a photo of the prescription</span>
+        <span class="dropzone__hint">or tap to choose a picture from the phone</span>
+      </label>
+
+      <img id="preview" class="preview" alt="Uploaded prescription" hidden>
+
+      <details class="typebox" id="typebox">
+        <summary>Or type the prescription instead</summary>
+        <p class="typebox__hint">Write one medicine on each line, for example:<br>
+          <code>Tab. Metformin 500mg 1-0-1 x 30 days after food</code></p>
+        <textarea id="rx-text" rows="7" spellcheck="false"
+          placeholder="Tab. Metformin 500mg 1-0-1 x 30 days after food&#10;Cap. Omeprazole 20mg OD before food x 14 days&#10;Tab Atorvastatin 10mg HS"></textarea>
+        <button id="parse-text" class="btn btn--big btn--green">Read this prescription</button>
+      </details>
+
+      <p id="ocr-note" class="hint" hidden></p>
+    </div>
+
+    <div id="step-review" class="card" hidden>
+      <p class="lead">Please check each medicine before the alarms start.
+        Tap a row to correct anything.</p>
+      <div id="review-warnings"></div>
+      <div id="review-list" class="review-list"></div>
+      <button id="add-row" class="btn btn--big btn--ghost">+ Add another medicine</button>
+
+      <label class="field">
+        <span>Start the alarms from</span>
+        <input type="date" id="start-date">
+      </label>
+
+      <div class="stack">
+        <button id="confirm-btn" class="btn btn--huge btn--green">✓ Confirm and set alarms</button>
+        <button id="cancel-review" class="btn btn--big btn--ghost">Start again</button>
+      </div>
+    </div>
+
+    <div id="step-done" class="card card--success" hidden>
+      <p class="done__icon" aria-hidden="true">✅</p>
+      <h3 id="done-title">Alarms are set</h3>
+      <ul id="done-list" class="done-list"></ul>
+      <button class="btn btn--huge btn--green" data-go="today">See today's medicines</button>
+    </div>
+  </section>
+
+  <!-- ===================== MEDICINES ===================== -->
+  <section id="view-medicines" class="view" hidden>
+    <h2 class="section-title">All medicines</h2>
+    <div id="medicine-list" class="medicine-list"></div>
+    <button class="btn btn--big btn--green" data-go="upload">+ Add from a prescription</button>
+  </section>
+
+  <!-- ===================== REPORT ===================== -->
+  <section id="view-report" class="view" hidden>
+    <h2 class="section-title">How well are the medicines going?</h2>
+    <div class="segmented" id="report-range">
+      <button class="segmented__btn is-active" data-days="7">Last 7 days</button>
+      <button class="segmented__btn" data-days="14">14 days</button>
+      <button class="segmented__btn" data-days="30">30 days</button>
+    </div>
+    <div id="report-body"></div>
+  </section>
+
+  <!-- ===================== SETTINGS ===================== -->
+  <section id="view-settings" class="view" hidden>
+    <h2 class="section-title">Patient &amp; daily routine</h2>
+
+    <form id="patient-form" class="card">
+      <label class="field"><span>Patient name</span>
+        <input id="p-name" required autocomplete="name"></label>
+      <div class="row">
+        <label class="field"><span>Age</span><input id="p-age" type="number" min="0" max="120"></label>
+        <label class="field"><span>Phone</span><input id="p-phone" type="tel" autocomplete="tel"></label>
+      </div>
+      <div class="row">
+        <label class="field"><span>Family / caregiver</span><input id="p-cname"></label>
+        <label class="field"><span>Caregiver phone</span><input id="p-cphone" type="tel"></label>
+      </div>
+
+      <h3 class="subhead">Daily routine</h3>
+      <p class="hint">Alarms follow these times, so “after breakfast” means whatever time
+        breakfast really is.</p>
+      <div class="row row--times">
+        <label class="field"><span>Wake up</span><input id="r-wake" type="time"></label>
+        <label class="field"><span>Breakfast</span><input id="r-breakfast" type="time"></label>
+        <label class="field"><span>Lunch</span><input id="r-lunch" type="time"></label>
+        <label class="field"><span>Evening</span><input id="r-evening" type="time"></label>
+        <label class="field"><span>Dinner</span><input id="r-dinner" type="time"></label>
+        <label class="field"><span>Bed time</span><input id="r-bed" type="time"></label>
+      </div>
+      <button class="btn btn--huge btn--green" id="save-patient">Save</button>
+    </form>
+
+    <div class="card">
+      <h3 class="subhead">Alarm</h3>
+      <label class="check"><input type="checkbox" id="opt-sound" checked> <span>Play an alarm sound</span></label>
+      <label class="check"><input type="checkbox" id="opt-voice" checked> <span>Say the medicine name out loud</span></label>
+      <label class="check"><input type="checkbox" id="opt-notify" checked> <span>Show a phone notification</span></label>
+      <button id="test-alarm" class="btn btn--big btn--ghost">🔔 Test the alarm</button>
+      <p class="hint" id="notify-state"></p>
+    </div>
+
+    <div class="card">
+      <h3 class="subhead">Add another patient</h3>
+      <label class="field"><span>Name</span><input id="new-patient-name" placeholder="e.g. Ram Prasad"></label>
+      <button id="add-patient" class="btn btn--big btn--green">Add patient</button>
+    </div>
+  </section>
+</main>
+
+<!-- ===================== Bottom navigation ===================== -->
+<nav class="tabbar" aria-label="Main">
+  <button class="tab is-active" data-go="today"><span aria-hidden="true">🏠</span>Today</button>
+  <button class="tab" data-go="upload"><span aria-hidden="true">📄</span>Add Rx</button>
+  <button class="tab" data-go="medicines"><span aria-hidden="true">💊</span>Medicines</button>
+  <button class="tab" data-go="report"><span aria-hidden="true">📈</span>Report</button>
+  <button class="tab" data-go="settings"><span aria-hidden="true">⚙️</span>Settings</button>
+</nav>
+
+<script src="/app/app.js"></script>
+</body>
+</html>
